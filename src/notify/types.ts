@@ -21,6 +21,8 @@ export interface LeadNotice {
 	hits: number;
 	/** True when an already-investigated host was re-scraped from a new IP and the lead re-opened. */
 	reopened?: boolean;
+	/** True when a beacon reported the first valid token for a pending `referer` or `brand_protection` lead. */
+	corroborated?: boolean;
 }
 
 export interface AttributionLine {
@@ -70,6 +72,11 @@ export interface Notifier {
 	/** Whether the channel can receive button clicks (otherwise CLI hints are shown). */
 	readonly interactive: boolean;
 	notifyLead(n: LeadNotice): Promise<NotifyRef | null>;
+	/**
+	 * Re-render a posted lead message in place, buttons included (a beacon corroborated it).
+	 * Returns false when the channel can't edit that message; the caller posts a new one.
+	 */
+	updateLead(ref: NotifyRef, n: LeadNotice): Promise<boolean>;
 	notifyCase(n: CaseNotice): Promise<NotifyRef | null>;
 	notifyFlags(flags: FlagNotice[], totalPending: number): Promise<NotifyRef | null>;
 	/** Mark a previously posted request as handled (e.g. approved from the admin API). */

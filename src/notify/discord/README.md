@@ -113,6 +113,8 @@ The message opens with what its **Source** means: `beacon` (a page on that host 
 
 **Re-scraped clone** is the same message for a host that was already investigated, sent when a visitor's beacon reports a token naming a **new scraper IP** (at most once per 24 hours per host; never for dismissed leads or while a case is open). The buttons behave as above; **Investigate** starts a new case with the new token as evidence.
 
+**Corroborated clone lead** is the original message of a pending `referer` or `brand_protection` lead, edited in place once a beacon reports a valid token from that host. It gains a *Corroborated by beacon* field with the token Ray ID, and its buttons stay. Discord doesn't notify anyone about an edit, so the title changes too, to stand out when you scroll back. If the lead has no message to edit, one new message is posted instead. It happens at most once per lead, never for dismissed or approved leads, and the token stays unconfirmed until **Investigate** finds it in the capture ([Corroborated leads](../../approvals/README.md#corroborated-leads)).
+
 ### Case awaiting decision (evidence report ready)
 
 The case decision applies to **every IP that fetched the copied HTML**, meaning the IPs inside the tokens found on the copy. **Cloudflare IPs and verified bots are always skipped** (the attribution line says so).

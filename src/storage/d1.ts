@@ -283,7 +283,11 @@ export async function activeBlockFlags(db: D1Database, now: number, limit = 10_0
 
 // ---------------------------------------------------------------- leads
 
-/** Insert or bump a lead. `isNew` is true only on first sight (used to notify once). */
+/**
+ * Insert or bump a lead. `isNew` is true only on first sight (used to notify once).
+ * The token is stored on insert only: a later beacon attaches it to a lead that has none
+ * with `attachLeadToken`, an atomic claim, so exactly one caller learns it was the first.
+ */
 export interface LeadInput {
 	host: string;
 	sampleUrl: string | null;
@@ -302,15 +306,25 @@ export async function upsertLead(db: D1Database, l: LeadInput): Promise<{ lead: 
 			`INSERT INTO leads (host, sample_url, source, token_ray, token, token_ip, status, first_seen, last_seen, hits)
 			 VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, 1)
 			 ON CONFLICT (host) DO UPDATE SET last_seen = excluded.last_seen, hits = leads.hits + 1,
-			   sample_url = COALESCE(leads.sample_url, excluded.sample_url),
-			   token_ray = COALESCE(leads.token_ray, excluded.token_ray),
-			   token = COALESCE(leads.token, excluded.token),
-			   token_ip = COALESCE(leads.token_ip, excluded.token_ip)
+			   sample_url = COALESCE(leads.sample_url, excluded.sample_url)
 			 RETURNING *`,
 		)
 		.bind(l.host.toLowerCase(), l.sampleUrl, l.source, l.tokenRay, l.token ?? null, l.tokenIp ?? null, now, now)
 		.first<LeadRow>();
 	return lead ? { lead, isNew: lead.hits === 1 } : null;
+}
+
+/**
+ * Attach a beacon token to a lead that has none yet. Atomic, like every approval claim:
+ * `WHERE token IS NULL` lets exactly one of several concurrent beacons win, and the
+ * returned row shows the lead's status and source at that moment. Returns null when the
+ * lead already had a token (another beacon got there first) or no longer exists.
+ */
+export async function attachLeadToken(db: D1Database, id: number, t: { token: string; tokenRay: string; tokenIp: string | null }): Promise<LeadRow | null> {
+	return db
+		.prepare(`UPDATE leads SET token = ?, token_ray = ?, token_ip = ? WHERE id = ? AND token IS NULL RETURNING *`)
+		.bind(t.token, t.tokenRay, t.tokenIp, id)
+		.first<LeadRow>();
 }
 
 /**

@@ -1,9 +1,12 @@
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { loadConfig, type Config } from "../src/core/config";
+import { updateOrPostLead, type LeadNotice, type Notifier } from "../src/notify";
+import type { DiscordApi } from "../src/notify/discord/api";
 import { handleDiscordInteraction } from "../src/notify/discord/interactions";
 import { caseMessage, decodeAction, encodeAction, flagsMessage, leadMessage, resolvedPayload } from "../src/notify/discord/messages";
+import { DiscordBotNotifier, DiscordWebhookNotifier } from "../src/notify/discord/notifier";
 import { verifyDiscordSignature } from "../src/notify/discord/verify";
 
 const APPROVER = "111111111111111111";
@@ -114,6 +117,63 @@ describe("Discord message helpers", () => {
 		const out = resolvedPayload(message, "Done", { type: "row", customId: "hp|flag|reject|ip:a" }) as { components: unknown[] };
 		expect(out.components).toHaveLength(1);
 		expect((resolvedPayload(message, "Done") as { components: unknown[] }).components).toHaveLength(0);
+	});
+});
+
+describe("lead corroborated by a beacon", () => {
+	const notice: LeadNotice = {
+		id: 7,
+		host: "look-alike.example",
+		source: "brand_protection",
+		sampleUrl: "https://look-alike.example/",
+		tokenRay: "0123456789abcdef",
+		firstSeen: 1,
+		hits: 2,
+		corroborated: true,
+	};
+
+	it("says it is corroborated, shows the token Ray ID once, and keeps the buttons", () => {
+		const p = leadMessage(notice, true);
+		const embed = JSON.stringify(p.embeds);
+		expect(embed).toContain("Corroborated clone lead");
+		expect(embed).toContain("Corroborated by beacon");
+		expect(embed).toContain("Still unconfirmed");
+		expect(embed.match(/0123456789abcdef/g)).toHaveLength(1);
+		expect(JSON.stringify(p.components)).toContain("hp|lead|approve|7");
+		expect(p.allowed_mentions).toEqual({ parse: [] });
+		// Untrusted values render as inline code.
+		expect(embed).toContain("(Ray `0123456789abcdef`)");
+	});
+
+	it("the bot edits the original message in place; the webhook can't, so the caller posts", async () => {
+		const editMessage = vi.fn(async () => ({ id: "2", channel_id: "1" }));
+		const createMessage = vi.fn(async () => ({ id: "3", channel_id: "1" }));
+		const bot = new DiscordBotNotifier({ editMessage, createMessage } as unknown as DiscordApi, "1");
+		expect(await bot.updateLead("discord:1:2", notice)).toBe(true);
+		expect(editMessage).toHaveBeenCalledWith("1", "2", leadMessage(notice, true));
+		expect(await bot.updateLead("discord-webhook:1:2", notice)).toBe(false);
+		expect(createMessage).not.toHaveBeenCalled();
+		expect(await new DiscordWebhookNotifier("http://127.0.0.1:9/webhook").updateLead()).toBe(false);
+	});
+
+	it("updateOrPostLead edits when it can and posts one new message otherwise", async () => {
+		const fake = (update: () => Promise<boolean>) => {
+			const n = { updateLead: vi.fn(update), notifyLead: vi.fn(async () => "discord:1:99") };
+			return { n, notifier: n as unknown as Notifier };
+		};
+		const edits = fake(async () => true);
+		expect(await updateOrPostLead(edits.notifier, "discord:1:2", notice)).toBe("discord:1:2");
+		expect(edits.n.notifyLead).not.toHaveBeenCalled();
+
+		const noRef = fake(async () => true);
+		expect(await updateOrPostLead(noRef.notifier, null, notice)).toBe("discord:1:99");
+		expect(noRef.n.updateLead).not.toHaveBeenCalled();
+
+		for (const update of [async () => false, async () => Promise.reject(new Error("Unknown Message"))]) {
+			const f = fake(update);
+			expect(await updateOrPostLead(f.notifier, "discord:1:2", notice)).toBe("discord:1:99");
+			expect(f.n.notifyLead).toHaveBeenCalledTimes(1);
+		}
 	});
 });
 

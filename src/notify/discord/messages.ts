@@ -62,7 +62,7 @@ export function leadMessage(n: LeadNotice, interactive: boolean): DiscordPayload
 	const hint = `\nCLI: \`npm run hp -- approve-lead ${n.id}\` or \`npm run hp -- dismiss-lead ${n.id}\``;
 	return base(
 		{
-			title: `${n.reopened ? "Re-scraped clone" : "Clone lead"}: ${n.host}`.slice(0, 256),
+			title: `${n.reopened ? "Re-scraped clone" : n.corroborated ? "Corroborated clone lead" : "Clone lead"}: ${n.host}`.slice(0, 256),
 			description:
 				(n.reopened
 					? "This host was already investigated, but a visitor's browser just reported a token that names a **new scraper IP**: the copy was refreshed from somewhere else. "
@@ -70,11 +70,21 @@ export function leadMessage(n: LeadNotice, interactive: boolean): DiscordPayload
 				"**Investigate** starts one evidence Workflow (capture, decode, URL Scanner, Threat Intel). Nothing is enforced at this step." +
 				(interactive ? "" : hint),
 			fields: [
+				...(n.corroborated
+					? [
+							{
+								name: "Corroborated by beacon",
+								value:
+									`A page on this host reported one of our tokens${n.tokenRay ? ` (Ray ${code(n.tokenRay)})` : ""} after the lead was first seen. ` +
+									"Still unconfirmed until **Investigate** finds it in the capture: a beacon report can be forged.",
+							},
+						]
+					: []),
 				{ name: "Source", value: n.source, inline: true },
 				{ name: "Hits", value: String(n.hits), inline: true },
 				{ name: "First seen", value: `<t:${n.firstSeen}:R>`, inline: true },
 				{ name: "Sample URL", value: n.sampleUrl ? code(n.sampleUrl) : "n/a" },
-				...(n.tokenRay ? [{ name: "Token Ray ID", value: code(n.tokenRay), inline: true }] : []),
+				...(n.tokenRay && !n.corroborated ? [{ name: "Token Ray ID", value: code(n.tokenRay), inline: true }] : []),
 			],
 		},
 		interactive ? [row([button("Investigate", 3, encodeAction("lead", "approve", n.id)), button("Dismiss", 2, encodeAction("lead", "dismiss", n.id))])] : [],

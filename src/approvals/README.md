@@ -7,7 +7,7 @@ Every consequential action lives here. All human entry points call the same func
 | `actions.ts` | `approveLeadAction`, `dismissLeadAction`, `decideCaseAction`, `approveFlagsAction`, `rejectFlagsAction`, `submitAbuseReportAction`. Each returns `{ ok, summary, notifyRef }` and never throws for expected refusals. State changes are atomic claims, so double clicks and concurrent approvers are safe: the loser gets *Not applied*. A decision moves the case to `applying` before the event is sent; an abuse report can be submitted at most once |
 | `cases.ts` | `startInvestigation` (claims the lead atomically, refuses our own host and a second open case for the same host, which a D1 partial unique index also enforces; if the Workflow can't be created, the case becomes `errored` and the lead goes back to `pending`), plus decision parsing and sending |
 | `enforce.ts` | `applyFlag`, `removeFlag`, [WAF List](https://developers.cloudflare.com/waf/tools/lists/custom-lists/) sync and the daily `reconcileWafList`. **Cloudflare IPs are protected** (`ProtectedIpError`). IP indicators must be a single IPv4 or IPv6 address (no CIDR ranges) and are stored in canonical form (`InvalidIndicatorError` otherwise). Each sync is one bulk write that waits for its [bulk operation](https://developers.cloudflare.com/api/resources/rules/subresources/lists/subresources/bulk_operations/methods/get/) and retries `429` with bounded backoff |
-| `leads.ts` | `recordLead`: dedupes by host and notifies only on first sight; re-opens an investigated host after a re-scrape from a new scraper IP (see below) |
+| `leads.ts` | `recordLead`: dedupes by host and notifies on first sight; escalates a pending weak lead once when a beacon corroborates it, and re-opens an investigated host after a re-scrape from a new scraper IP (both below) |
 
 ## Approval model
 
@@ -45,7 +45,7 @@ When a case decision (or a manual flag) replaces a flag from another source, for
 
 ## Lead sources
 
-A lead is a foreign host that *might* run a copy of the site. Its `source` (the **Source** field in Discord, `source` in `npm run hp -- leads` and `GET /leads`) names the discovery channel that saw the host **first**, and so how much the lead proves on its own. Leads are deduplicated by host: a later signal from another channel only adds hits (a beacon also attaches its token), and `source` keeps its first value.
+A lead is a foreign host that *might* run a copy of the site. Its `source` (the **Source** field in Discord, `source` in `npm run hp -- leads` and `GET /leads`) names the discovery channel that saw the host **first**, and so how much the lead proves on its own. Leads are deduplicated by host: a later signal from another channel only adds hits, and `source` keeps its first value. The one exception is a beacon: it attaches its token to a lead that has none, and a pending `referer` or `brand_protection` lead is then escalated once ([Corroborated leads](#corroborated-leads)).
 
 | `source` | Created by | What it means | Strength on its own | `hits` counts |
 |---|---|---|---|---|
@@ -60,7 +60,7 @@ A lead is a foreign host that *might* run a copy of the site. Its `source` (the 
 
 1. Run `npm run hp -- decode <sample URL>`. It decodes the live page without storing anything or using quota. Like the capture, the fetch comes from your Worker and carries `CF-Worker: <your zone>`.
 2. Decide:
-   - **Error status** (`fetched.status` isn't 2xx and `fetched.error` is set; for example `530` with `cloudflareError: "1016"`, so no live site is behind the host): nothing was checked. Don't investigate yet, because the capture would get the same error page and close as `no_evidence`. Leave the lead pending, or dismiss it to clear the queue. Both are deleted 14 days after they were last seen, and after that a new signal creates a fresh lead and notifies again.
+   - **Error status** (`fetched.status` isn't 2xx and `fetched.error` is set; for example `530` with `cloudflareError: "1016"`, so no live site is behind the host): nothing was checked. Don't investigate yet, because the capture would get the same error page and close as `no_evidence`. Leave the lead pending: if a beacon later reports a valid token from this host, the lead is escalated once ([Corroborated leads](#corroborated-leads)), while a dismissed lead never is. Either way, the lead is deleted 14 days after it was last seen, and after that a new signal creates a fresh lead and notifies again.
    - **Valid token:** click **Investigate**.
    - **No token, and the page is unrelated:** click **Dismiss**.
    - **No token, but the page plainly copies yours** (tokens stripped, or a re-skin): **Investigate** anyway to keep a dated snapshot. Without a token there is no attribution, so take it up with the host or registrar yourself.
@@ -73,6 +73,23 @@ A lead is deduplicated by host. Once its host has been investigated (`approved`)
 - the lead was re-opened less than 24 hours ago (`LEAD_REOPEN_COOLDOWN_SEC`), so a scraper rotating IPs can't flood the channel. Notifications are also bounded by `NOTIFY_LIMITER`.
 
 A live reverse proxy always fetches from the same Worker egress, so it doesn't re-open on every visitor.
+
+## Corroborated leads
+
+A `referer` or `brand_protection` lead is a weak signal, and an approver may set its message aside as "just a look-alike". When a beacon later reports a valid token for the same host while that lead is still `pending`, `recordLead` escalates it **once**:
+- The lead keeps its `source` and gains the beacon's token, its Ray ID and the scraper IP inside it, as for a beacon-sourced lead. The token is the scraper's, never the beacon sender's data.
+- The original lead message is re-rendered in place through `notify_ref` as **Corroborated clone lead**, with a *Corroborated by beacon* field naming the token Ray ID. Its **Investigate** and **Dismiss** buttons stay. When there is no message to edit (notifications were off or rate-limited at first sight, a webhook channel, or the edit fails), one new message is posted instead.
+- Like every beacon token, it stays **unconfirmed** until the capture finds it: a beacon report can be forged.
+
+The first token is attached with an atomic claim, `UPDATE leads … WHERE id = ? AND token IS NULL RETURNING *`. Of several concurrent beacons, exactly one gets the row back, and only that call can escalate. The row shows the lead's status and source at the moment of the claim, so the escalation never fires when:
+- the lead is `dismissed` (the token is still kept as evidence, silently);
+- the lead is `approved` (the token becomes evidence and enables [re-scrape detection](#re-scraped-hosts));
+- the lead's source is `beacon` (it had a token from the start; an older row without one gets it attached silently);
+- the lead already has a token (later beacons only add hits).
+
+So a weak lead you leave `pending` (for example because its host only returns an error page today) stays open: a beacon from that host later escalates it. Dismiss it if you never want to hear about the host again; a dismissed lead is never escalated.
+
+The escalation goes through `NOTIFY_LIMITER` like every notification; when it's rate-limited, the lead still shows its token in `npm run hp -- leads`. The claim runs only while a lead has no token (normally one statement per lead; a concurrent loser matches no row), on the beacon path that `BEACON_LIMITER` and `LEAD_LIMITER` already bound, and needs no extra column.
 
 ## Verified bots
 

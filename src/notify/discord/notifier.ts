@@ -30,6 +30,14 @@ export class DiscordBotNotifier implements Notifier {
 		return this.post(leadMessage(n, true));
 	}
 
+	async updateLead(ref: NotifyRef, n: LeadNotice): Promise<boolean> {
+		const r = parseDiscordRef(ref);
+		if (!r) return false;
+		// The whole message is re-rendered, so its buttons stay and the lead remains actionable.
+		await this.api.editMessage(r.channelId, r.messageId, leadMessage(n, true));
+		return true;
+	}
+
 	notifyCase(n: CaseNotice): Promise<NotifyRef> {
 		return this.post(caseMessage(n, true));
 	}
@@ -63,6 +71,11 @@ export class DiscordWebhookNotifier implements Notifier {
 
 	notifyLead(n: LeadNotice): Promise<NotifyRef | null> {
 		return this.post(leadMessage(n, false));
+	}
+
+	async updateLead(): Promise<boolean> {
+		// Notify-only channel: a new message is the notification.
+		return false;
 	}
 
 	notifyCase(n: CaseNotice): Promise<NotifyRef | null> {

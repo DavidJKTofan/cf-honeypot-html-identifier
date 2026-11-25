@@ -9,7 +9,7 @@ This folder asks a human before anything consequential happens, so automation ca
 | File | Purpose |
 |---|---|
 | `types.ts` | The `Notifier` interface and the notice payloads (`LeadNotice`, `CaseNotice`, `FlagNotice`) |
-| `index.ts` | `getNotifier()` (picks the adapter from `NOTIFY_CHANNEL`), `notifySafe()` and `resolveSafe()`. Notifications never throw and are rate-limited by `NOTIFY_LIMITER` (a [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)) |
+| `index.ts` | `getNotifier()` (picks the adapter from `NOTIFY_CHANNEL`), `notifySafe()`, `resolveSafe()` and `updateOrPostLead()` (edit a lead message in place, else post one). Notifications never throw and are rate-limited by `NOTIFY_LIMITER` (a [Rate Limiting binding](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)) |
 | [`discord/`](discord/README.md) | Discord bot with buttons, or a Discord webhook (notify-only) |
 
 ## Configuration
@@ -21,7 +21,7 @@ This folder asks a human before anything consequential happens, so automation ca
 
 ## Safeguards against flooding
 
-- **Leads:** notified **once per host**, on first sight. Repeat beacons only increase the lead's hit count, and lead writes themselves are capped per host, per token and globally (see [honeypot](../honeypot/README.md)).
+- **Leads:** notified **once per host**, on first sight. Repeat beacons only increase the lead's hit count, and lead writes themselves are capped per host, per token and globally (see [honeypot](../honeypot/README.md)). Two bounded exceptions: the first beacon token for a pending `referer` or `brand_protection` lead updates its message once ([corroborated](../approvals/README.md#corroborated-leads)), and a re-scrape re-opens an investigated host at most once per 24 hours ([re-scraped](../approvals/README.md#re-scraped-hosts)).
 - **Rate limit:** `NOTIFY_LIMITER` allows 20 notifications per minute per location. When it's exceeded, the notification is skipped and the lead stays visible in `npm run hp -- leads`.
 - **Trap flags:** these can be numerous, so they arrive as **one daily digest** of the top 5 (`npm run hp -- notify-flags` sends one now).
 - **Duplicate approvals** never start a second Workflow: the lead is claimed atomically, and a partial unique index in D1 allows only one open case per host.
@@ -30,7 +30,7 @@ This folder asks a human before anything consequential happens, so automation ca
 ## Using another channel (Slack, Telegram, …)
 
 Discord is one adapter, and any chat tool with buttons or callbacks can do the same job:
-1. Implement `Notifier` in `src/notify/<channel>/`.
+1. Implement `Notifier` in `src/notify/<channel>/`. `updateLead` may return `false` when the channel can't edit a posted message; a new message is posted instead.
 2. Add a case to `getNotifier()`.
 3. Add an endpoint that **verifies the platform's signature** and maps button clicks to `approvals/actions.ts`.
 

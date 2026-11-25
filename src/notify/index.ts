@@ -7,7 +7,7 @@ import type { Config } from "../core/config";
 import { errorMessage, log } from "../core/util";
 import { DiscordApi } from "./discord/api";
 import { DiscordBotNotifier, DiscordWebhookNotifier } from "./discord/notifier";
-import type { Notifier, NotifyRef } from "./types";
+import type { LeadNotice, Notifier, NotifyRef } from "./types";
 
 export type { CaseNotice, FlagNotice, LeadNotice, Notifier, NotifyRef } from "./types";
 
@@ -53,6 +53,22 @@ export async function notifySafe(
 		log("error", "notify: failed", { label, error: errorMessage(err) });
 		return null;
 	}
+}
+
+/**
+ * Re-render the lead's posted message in place when there is one (its buttons stay), else
+ * post one new message. A failed edit (for example a deleted message) also falls back to a
+ * new message, so the update is never lost silently. Use inside `notifySafe`.
+ */
+export async function updateOrPostLead(n: Notifier, ref: NotifyRef | null, notice: LeadNotice): Promise<NotifyRef | null> {
+	if (ref) {
+		try {
+			if (await n.updateLead(ref, notice)) return ref;
+		} catch (err) {
+			log("warn", "notify: lead update failed, posting a new message", { lead: notice.id, error: errorMessage(err) });
+		}
+	}
+	return n.notifyLead(notice);
 }
 
 export async function resolveSafe(env: Env, cfg: Config, ref: NotifyRef | null, summary: string): Promise<void> {

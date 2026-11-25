@@ -1,8 +1,20 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { recordLead } from "../src/approvals/leads";
 import { loadConfig } from "../src/core/config";
-import { claimLead, createCase, dismissPendingLead, getFlag, getLead, recordPendingFlag, updateCase, upsertActiveFlag, type LeadRow } from "../src/storage/d1";
+import {
+	claimLead,
+	createCase,
+	dismissPendingLead,
+	getFlag,
+	getLead,
+	recordPendingFlag,
+	updateCase,
+	upsertActiveFlag,
+	upsertLead,
+	type LeadRow,
+	type LeadSource,
+} from "../src/storage/d1";
 
 const cfg = loadConfig(env);
 
@@ -14,6 +26,34 @@ const beacon = (host: string, tokenIp: string, tokenRay: string) => ({
 	tokenRay,
 	token: `tok-${tokenRay}`,
 	tokenIp,
+});
+
+/** A lead from a weaker discovery channel, as the maintenance Workflow records it (no token). */
+const weak = (host: string, source: LeadSource) => ({ host, sampleUrl: `https://${host}/`, source, tokenRay: null });
+
+const CHANNEL = "800000000000000001";
+const MESSAGE = "900000000000000001";
+
+/** An env whose Discord bot notifier works, with every Discord API call captured (nothing leaves the test). */
+function discordEnv(db: D1Database = env.DB) {
+	const calls: { method: string; path: string; body: string }[] = [];
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+		calls.push({ method: init?.method ?? "GET", path: new URL(String(input)).pathname, body: String(init?.body ?? "") });
+		return Response.json({ id: MESSAGE, channel_id: CHANNEL });
+	});
+	const e = {
+		...env,
+		DB: db,
+		DISCORD_BOT_TOKEN: "test-bot-token",
+		DISCORD_CHANNEL_ID: CHANNEL,
+		DISCORD_API_BASE: "http://127.0.0.1:9",
+		NOTIFY_LIMITER: { limit: async () => ({ success: true }) },
+	} as unknown as Env;
+	return { calls, env: e, cfg: loadConfig(e) };
+}
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 async function approvedLead(host: string, ip = "203.0.113.10"): Promise<LeadRow> {
@@ -75,6 +115,112 @@ describe("re-scrape re-opens an investigated host", () => {
 		await updateCase(env.DB, "case-open-reopen", { status: "closed" });
 		const after = await recordLead(env, cfg, beacon("open-case.example", "198.51.100.3", "0101010101010101"));
 		expect(after?.reopened).toBe(true);
+	});
+});
+
+describe("a beacon corroborates a weaker lead", () => {
+	it("updates the original message in place, once, and keeps the source", async () => {
+		const d = discordEnv();
+		const first = await recordLead(d.env, d.cfg, weak("hotlinker.example", "referer"));
+		expect(first).toMatchObject({ isNew: true, corroborated: false });
+		expect(d.calls.map((c) => c.method)).toEqual(["POST"]);
+		expect((await getLead(env.DB, first!.lead.id))?.notify_ref).toBe(`discord:${CHANNEL}:${MESSAGE}`);
+
+		const r = await recordLead(d.env, d.cfg, beacon("hotlinker.example", "203.0.113.20", "1a1a1a1a1a1a1a1a"));
+		expect(r).toMatchObject({ isNew: false, reopened: false, corroborated: true });
+		expect(r?.lead).toMatchObject({ status: "pending", source: "referer", hits: 2, token: "tok-1a1a1a1a1a1a1a1a", token_ip: "203.0.113.20", token_ray: "1a1a1a1a1a1a1a1a" });
+		expect(d.calls).toHaveLength(2);
+		expect(d.calls[1]).toMatchObject({ method: "PATCH", path: `/channels/${CHANNEL}/messages/${MESSAGE}` });
+		expect(d.calls[1]?.body).toContain("Corroborated clone lead: hotlinker.example");
+		expect(d.calls[1]?.body).toContain("1a1a1a1a1a1a1a1a");
+		expect(d.calls[1]?.body).toContain(`hp|lead|approve|${first!.lead.id}`); // still actionable
+
+		// Later beacons only add hits: the first token stays and nobody is notified again.
+		const again = await recordLead(d.env, d.cfg, beacon("hotlinker.example", "198.51.100.20", "2b2b2b2b2b2b2b2b"));
+		expect(again).toMatchObject({ corroborated: false, reopened: false });
+		expect(again?.lead).toMatchObject({ hits: 3, token_ip: "203.0.113.20" });
+		expect(d.calls).toHaveLength(2);
+	});
+
+	it("posts one new message when the lead has none to edit", async () => {
+		// First sight with notifications off (or rate-limited): no notify_ref.
+		const first = await recordLead(env, cfg, weak("look-alike.example", "brand_protection"));
+		expect(first?.lead.notify_ref).toBeNull();
+		const d = discordEnv();
+		const r = await recordLead(d.env, d.cfg, beacon("look-alike.example", "203.0.113.21", "3c3c3c3c3c3c3c3c"));
+		expect(r?.corroborated).toBe(true);
+		expect(d.calls.map((c) => c.method)).toEqual(["POST"]);
+		expect(d.calls[0]?.body).toContain("Corroborated clone lead: look-alike.example");
+		expect((await getLead(env.DB, first!.lead.id))?.notify_ref).toBe(`discord:${CHANNEL}:${MESSAGE}`);
+	});
+
+	it("never escalates a beacon lead, even an older one stored without its token", async () => {
+		const d = discordEnv();
+		await recordLead(d.env, d.cfg, beacon("beacon-first.example", "203.0.113.22", "4d4d4d4d4d4d4d4d"));
+		const next = await recordLead(d.env, d.cfg, beacon("beacon-first.example", "198.51.100.22", "5e5e5e5e5e5e5e5e"));
+		expect(next?.corroborated).toBe(false);
+
+		// A beacon lead from before 0004 has a Ray ID but no token: the token is attached, quietly.
+		const legacy = await upsertLead(env.DB, { host: "legacy-beacon.example", sampleUrl: null, source: "beacon", tokenRay: "6f6f6f6f6f6f6f6f" });
+		const calls = d.calls.length;
+		const r = await recordLead(d.env, d.cfg, beacon("legacy-beacon.example", "203.0.113.23", "7a7a7a7a7a7a7a7a"));
+		expect(r?.corroborated).toBe(false);
+		expect(await getLead(env.DB, legacy!.lead.id)).toMatchObject({ status: "pending", token: "tok-7a7a7a7a7a7a7a7a", token_ip: "203.0.113.23" });
+		expect(d.calls).toHaveLength(calls);
+	});
+
+	it("never escalates a dismissed lead, but keeps the token as evidence", async () => {
+		const first = await recordLead(env, cfg, weak("dismissed-referer.example", "referer"));
+		expect(await dismissPendingLead(env.DB, first!.lead.id)).toBe(true);
+		const d = discordEnv();
+		const r = await recordLead(d.env, d.cfg, beacon("dismissed-referer.example", "203.0.113.24", "8b8b8b8b8b8b8b8b"));
+		expect(r?.corroborated).toBe(false);
+		expect(r?.lead).toMatchObject({ status: "dismissed", token: "tok-8b8b8b8b8b8b8b8b" });
+		expect(d.calls).toHaveLength(0);
+	});
+
+	it("never escalates an approved lead; its token still enables re-scrape detection", async () => {
+		const first = await recordLead(env, cfg, weak("approved-referer.example", "referer"));
+		expect(await claimLead(env.DB, first!.lead.id)).toBe(true);
+		const d = discordEnv();
+		const r = await recordLead(d.env, d.cfg, beacon("approved-referer.example", "203.0.113.25", "9c9c9c9c9c9c9c9c"));
+		expect(r?.corroborated).toBe(false);
+		expect(r?.lead).toMatchObject({ status: "approved", token_ip: "203.0.113.25" });
+		expect(d.calls).toHaveLength(0);
+		// A later token naming another scraper IP re-opens it, as for a beacon-sourced lead.
+		const rescrape = await recordLead(d.env, d.cfg, beacon("approved-referer.example", "198.51.100.25", "adadadadadadadad"));
+		expect(rescrape?.reopened).toBe(true);
+	});
+
+	it("concurrent beacons escalate exactly once", async () => {
+		const first = await recordLead(env, cfg, weak("race.example", "referer"));
+		// Hold every token claim back briefly, so all three beacons upsert before any of them claims.
+		let claims = 0;
+		const racingDb = {
+			prepare(sql: string) {
+				const stmt = env.DB.prepare(sql);
+				if (!sql.includes("token IS NULL")) return stmt;
+				return {
+					bind: (...args: unknown[]) => ({
+						first: async () => {
+							claims++;
+							await scheduler.wait(25);
+							return stmt.bind(...args).first();
+						},
+					}),
+				};
+			},
+		} as unknown as D1Database;
+		const d = discordEnv(racingDb);
+		const results = await Promise.all(
+			["203.0.113.30", "203.0.113.31", "203.0.113.32"].map((ip, i) => recordLead(d.env, d.cfg, beacon("race.example", ip, `${i}e`.repeat(8)))),
+		);
+		expect(claims).toBe(3);
+		const winners = results.filter((r) => r?.corroborated);
+		expect(winners).toHaveLength(1);
+		expect(d.calls.map((c) => c.method)).toEqual(["POST"]);
+		const lead = await getLead(env.DB, first!.lead.id);
+		expect(lead).toMatchObject({ status: "pending", hits: 4, token_ip: winners[0]?.lead.token_ip });
 	});
 });
 
