@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Fingerprint } from "../src/identity/fingerprint";
 import { CLOUDFLARE_IPS_SNAPSHOT, parseCidr } from "../src/integrations/cloudflare/ip-ranges";
-import { decisionTargets, isLiveMirror, needsIngestionWait, secondsBeforeCapture } from "../src/workflows/evidence";
-import { attributionRows, shorten } from "../src/workflows/report";
+import { capCaseTokens, decisionTargets, isLiveMirror, needsIngestionWait, secondsBeforeCapture } from "../src/workflows/evidence";
+import { attributionRows, escapeMd, shorten } from "../src/workflows/report";
 import type { TokenEvidence } from "../src/workflows/types";
 
 const ranges = {
@@ -88,7 +88,27 @@ describe("decision targets", () => {
 	});
 });
 
+describe("token cap", () => {
+	it("keeps the earliest fetches and the newest few, and counts the rest", () => {
+		const tokens = Array.from({ length: 60 }, (_, i) => ev({ issuedAt: CAPTURED_SEC - 10_000 + i, ip: `198.18.0.${i + 1}` }));
+		const { kept, omitted } = capCaseTokens([...tokens].reverse(), 50);
+		expect(kept).toHaveLength(50);
+		expect(omitted).toBe(10);
+		const ips = kept.map((t) => t.fingerprint.ip);
+		expect(ips.slice(0, 45)).toEqual(tokens.slice(0, 45).map((t) => t.fingerprint.ip)); // earliest first
+		expect(ips.slice(45)).toEqual(tokens.slice(55).map((t) => t.fingerprint.ip)); // plus the 5 newest
+		expect(capCaseTokens(tokens.slice(0, 3), 50)).toEqual({ kept: tokens.slice(0, 3), omitted: 0 });
+	});
+});
+
 describe("report rows", () => {
+	it("escapes untrusted text so it can't become links, HTML or table cells", () => {
+		expect(escapeMd("[click](https://evil.example)")).toBe("\\[click\\]\\(https://evil.example\\)");
+		expect(escapeMd("<img src=x onerror=alert(1)>")).toBe("\\<img src=x onerror=alert\\(1\\)\\>");
+		expect(escapeMd("a|b\nc")).toBe("a\\|b c");
+		expect(escapeMd(null)).toBe("");
+	});
+
 	it("shortens long values without cutting a word in half", () => {
 		const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 		const out = shorten(ua, 80);

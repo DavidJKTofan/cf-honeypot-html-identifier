@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSubmission, draftAbuseReport } from "../src/integrations/cloudflare/abuse";
-import { CLOUDFLARE_IPS_SNAPSHOT, isCloudflareIp, parseCidr } from "../src/integrations/cloudflare/ip-ranges";
+import { CLOUDFLARE_IPS_SNAPSHOT, isCloudflareIp, parseCidr, unionWithSnapshot } from "../src/integrations/cloudflare/ip-ranges";
 
 const ranges = {
 	cidrs: [...CLOUDFLARE_IPS_SNAPSHOT.ipv4_cidrs, ...CLOUDFLARE_IPS_SNAPSHOT.ipv6_cidrs].map((c) => parseCidr(c)!),
@@ -20,6 +20,15 @@ describe("Cloudflare IP ranges", () => {
 		["not-an-ip", false],
 	])("%s → %s", (ip, expected) => {
 		expect(isCloudflareIp(ip, ranges)).toBe(expected);
+	});
+
+	it("a partial live list never drops a snapshot range, and new live ranges are added", () => {
+		const partial = unionWithSnapshot({ ipv4_cidrs: ["104.16.0.0/13"] });
+		expect(partial.source).toBe("api");
+		expect(isCloudflareIp("173.245.48.1", partial)).toBe(true);
+		expect(isCloudflareIp("2606:4700::1", partial)).toBe(true);
+		expect(isCloudflareIp("198.51.100.1", unionWithSnapshot({ ipv4_cidrs: ["198.51.100.0/24"] }))).toBe(true);
+		expect(unionWithSnapshot({}).source).toBe("snapshot");
 	});
 
 	it("parses every snapshot CIDR", () => {

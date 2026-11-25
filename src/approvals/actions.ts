@@ -4,7 +4,7 @@
  * human-readable summary; none throws for expected refusals.
  */
 import type { Config } from "../core/config";
-import { errorMessage, log } from "../core/util";
+import { errorMessage, log, safeUrl } from "../core/util";
 import { abuseReportKey } from "../workflows/report";
 import { cfApi } from "../integrations/cloudflare/api";
 import { buildSubmission, parseReporter, type AbuseDraft } from "../integrations/cloudflare/abuse";
@@ -48,6 +48,11 @@ export async function approveLeadAction(env: Env, cfg: Config, leadId: number, a
 	const lead = await getLead(env.DB, leadId);
 	if (!lead) return { ok: false, summary: `Lead #${leadId} not found` };
 	if (lead.status !== "pending") return { ok: false, summary: `Lead #${leadId} is already ${lead.status}`, notifyRef: lead.notify_ref };
+	// An override URL may pick another page, never another host: the investigation would use this
+	// lead's beacon token as (unconfirmed) evidence against a site it never came from.
+	if (url !== undefined && safeUrl(url)?.hostname.toLowerCase() !== lead.host) {
+		return { ok: false, summary: `url must be on the lead's host ${lead.host} (start a manual case for another host)`, notifyRef: lead.notify_ref };
+	}
 	try {
 		const started = await startInvestigation(env, cfg, { url: url ?? lead.sample_url ?? `https://${lead.host}/`, leadId });
 		log("info", "lead approved", { leadId, caseId: started.caseId, actor: actor.id });

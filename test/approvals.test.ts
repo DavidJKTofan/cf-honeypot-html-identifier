@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { approveLeadAction, decideCaseAction, submitAbuseReportAction, type Actor } from "../src/approvals/actions";
-import { CaseInputError, startInvestigation } from "../src/approvals/cases";
+import { CaseInputError, parseDecision, startInvestigation } from "../src/approvals/cases";
+import { ttlFrom } from "../src/admin/context";
 import { loadConfig } from "../src/core/config";
 import { draftAbuseReport } from "../src/integrations/cloudflare/abuse";
 import {
@@ -262,13 +263,15 @@ describe("D1 helpers", () => {
 		expect(approved).toHaveLength(130);
 	});
 
-	it("upsertActiveFlag returns the stored row", async () => {
-		const row = await upsertActiveFlag(env.DB, { kind: "ip", value: "192.0.2.50", action: "decoy", reason: "manual", source: "manual", sourceRef: null, ttlDays: 2 });
+	it("upsertActiveFlag returns the stored row and the one it replaced", async () => {
+		const { row, previous } = await upsertActiveFlag(env.DB, { kind: "ip", value: "192.0.2.50", action: "decoy", reason: "manual", source: "manual", sourceRef: null, ttlDays: 2 });
+		expect(previous).toBeNull();
 		expect(row.indicator).toBe("ip:192.0.2.50");
 		expect(row.status).toBe("active");
 		const again = await upsertActiveFlag(env.DB, { kind: "ip", value: "192.0.2.50", action: "block", reason: "manual 2", source: "manual", sourceRef: null, ttlDays: 2 });
-		expect(again.action).toBe("block");
-		expect(again.reason).toBe("manual 2");
+		expect(again.row.action).toBe("block");
+		expect(again.row.reason).toBe("manual 2");
+		expect(again.previous).toEqual({ action: "decoy", status: "active" });
 	});
 
 	it("updateCase rejects columns that are not on the allowlist", async () => {
@@ -276,5 +279,36 @@ describe("D1 helpers", () => {
 		await expect(updateCase(env.DB, "case-allowlist", { ["host; DROP TABLE cases; --"]: "x" } as never)).rejects.toThrow("not updatable");
 		await updateCase(env.DB, "case-allowlist", { status: "closed", report_key: undefined });
 		expect((await getCase(env.DB, "case-allowlist"))?.status).toBe("closed");
+	});
+});
+
+describe("lead approval URL override", () => {
+	it("refuses an override URL on another host (the lead's beacon token would be misattributed)", async () => {
+		const host = "override-lead.example";
+		const leadId = await newLead(host);
+		const wf = fakeWorkflow();
+		const r = await approveLeadAction(wf.env, cfg, leadId, ALICE, "https://unrelated.example/page");
+		expect(r.ok).toBe(false);
+		expect(r.summary).toContain(host);
+		expect(wf.calls.create).toBe(0);
+		expect((await getLead(env.DB, leadId))?.status).toBe("pending");
+
+		// Another page on the same host is fine.
+		const ok = await approveLeadAction(wf.env, cfg, leadId, ALICE, `https://${host.toUpperCase()}/other`);
+		expect(ok.ok).toBe(true);
+		expect(wf.calls.create).toBe(1);
+	});
+});
+
+describe("TTL bounds", () => {
+	it("a fractional TTL rounds up to one day, never down to an instantly expired 0", () => {
+		expect(parseDecision({ action: "block", ttlDays: 0.5 })?.ttlDays).toBe(1);
+		expect(parseDecision({ action: "block", ttlDays: 3.9 })?.ttlDays).toBe(3);
+		expect(parseDecision({ action: "block", ttlDays: 0 })?.ttlDays).toBeUndefined();
+		expect(ttlFrom(0.5, 7)).toBe(1);
+		expect(ttlFrom(400, 7)).toBe(365);
+		expect(ttlFrom(0, 7)).toBe(7);
+		expect(ttlFrom(Number.POSITIVE_INFINITY, 7)).toBe(7);
+		expect(ttlFrom("3", 7)).toBe(7);
 	});
 });

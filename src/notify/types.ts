@@ -23,6 +23,8 @@ export interface LeadNotice {
 	reopened?: boolean;
 	/** True when a beacon reported the first valid token for a pending `referer` or `brand_protection` lead. */
 	corroborated?: boolean;
+	/** Id of an investigation that errored: the lead is back to `pending` and offered again. */
+	retryAfterCase?: string;
 }
 
 export interface AttributionLine {

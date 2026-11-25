@@ -62,8 +62,11 @@ export function leadMessage(n: LeadNotice, interactive: boolean): DiscordPayload
 	const hint = `\nCLI: \`npm run hp -- approve-lead ${n.id}\` or \`npm run hp -- dismiss-lead ${n.id}\``;
 	return base(
 		{
-			title: `${n.reopened ? "Re-scraped clone" : n.corroborated ? "Corroborated clone lead" : "Clone lead"}: ${n.host}`.slice(0, 256),
+			title: `${n.retryAfterCase ? "Investigation failed" : n.reopened ? "Re-scraped clone" : n.corroborated ? "Corroborated clone lead" : "Clone lead"}: ${n.host}`.slice(0, 256),
 			description:
+				(n.retryAfterCase
+					? `Investigation ${code(n.retryAfterCase)} errored (see Workers Logs or \`npm run hp -- case-status ${n.retryAfterCase}\`), so the lead is pending again. `
+					: "") +
 				(n.reopened
 					? "This host was already investigated, but a visitor's browser just reported a token that names a **new scraper IP**: the copy was refreshed from somewhere else. "
 					: (LEAD_SOURCE_TEXT[n.source] ?? LEAD_SOURCE_FALLBACK)) +

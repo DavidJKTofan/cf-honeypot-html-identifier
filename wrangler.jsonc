@@ -74,8 +74,9 @@
 	// https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
 	// namespace_id: account-unique integer string. period: 10 or 60 seconds.
 	"ratelimits": [
-		// Keys: "beacon:<clone host>" and "beacon-token:<token Ray ID>", so neither one host
-		// nor one token (which anyone can obtain by loading a page) can fan out quickly.
+		// Keys: "beacon:<clone host>" and "beacon-token:<token Ray ID>" (valid tokens only), so neither
+		// one host nor one token (which anyone can obtain by loading a page) can fan out quickly.
+		// Invalid reports use "beacon-invalid:<host>", so forged ones can't use up a real clone's budget.
 		{ "name": "BEACON_LIMITER", "namespace_id": "4201", "simple": { "limit": 10, "period": 60 } },
 		// Key: "trap:<ip>". At most 2 pending-flag writes per IP and minute.
 		{ "name": "TRAP_LIMITER", "namespace_id": "4202", "simple": { "limit": 2, "period": 60 } },

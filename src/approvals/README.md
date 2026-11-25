@@ -4,9 +4,9 @@ Every consequential action lives here. All human entry points call the same func
 
 | File | Purpose |
 |---|---|
-| `actions.ts` | `approveLeadAction`, `dismissLeadAction`, `decideCaseAction`, `approveFlagsAction`, `rejectFlagsAction`, `submitAbuseReportAction`. Each returns `{ ok, summary, notifyRef }` and never throws for expected refusals. State changes are atomic claims, so double clicks and concurrent approvers are safe: the loser gets *Not applied*. A decision moves the case to `applying` before the event is sent; an abuse report can be submitted at most once |
+| `actions.ts` | `approveLeadAction`, `dismissLeadAction`, `decideCaseAction`, `approveFlagsAction`, `rejectFlagsAction`, `submitAbuseReportAction`. Each returns `{ ok, summary, notifyRef }` and never throws for expected refusals. State changes are atomic claims, so double clicks and concurrent approvers are safe: the loser gets *Not applied*. A decision moves the case to `applying` before the event is sent; an abuse report can be submitted at most once. A lead approval's override URL must be on the lead's host (another host would be judged by this lead's beacon token) |
 | `cases.ts` | `startInvestigation` (claims the lead atomically, refuses our own host and a second open case for the same host, which a D1 partial unique index also enforces; if the Workflow can't be created, the case becomes `errored` and the lead goes back to `pending`), plus decision parsing and sending |
-| `enforce.ts` | `applyFlag`, `removeFlag`, [WAF List](https://developers.cloudflare.com/waf/tools/lists/custom-lists/) sync and the daily `reconcileWafList`. **Cloudflare IPs are protected** (`ProtectedIpError`). IP indicators must be a single IPv4 or IPv6 address (no CIDR ranges) and are stored in canonical form (`InvalidIndicatorError` otherwise). Each sync is one bulk write that waits for its [bulk operation](https://developers.cloudflare.com/api/resources/rules/subresources/lists/subresources/bulk_operations/methods/get/) and retries `429` with bounded backoff |
+| `enforce.ts` | `applyFlag`, `removeFlag`, [WAF List](https://developers.cloudflare.com/waf/tools/lists/custom-lists/) sync and the daily `reconcileWafList`. **Cloudflare IPs are protected** (`ProtectedIpError`). IP indicators must be a single IPv4 or IPv6 address (no CIDR ranges) and are stored in canonical form (`InvalidIndicatorError` otherwise). Each sync is one bulk write that waits for its [bulk operation](https://developers.cloudflare.com/api/resources/rules/subresources/lists/subresources/bulk_operations/methods/get/) and retries `429` with bounded backoff. Turning an active block into a decoy removes the IP's list item (`downgradedBlockIp`), or the edge would keep blocking it. Reconcile removes orphans only when the D1 read of active blocks wasn't capped |
 | `leads.ts` | `recordLead`: dedupes by host and notifies on first sight; escalates a pending weak lead once when a beacon corroborates it, and re-opens an investigated host after a re-scrape from a new scraper IP (both below) |
 
 ## Approval model
@@ -31,15 +31,15 @@ stateDiagram-v2
         lead_pending --> investigating: Investigate
         investigating --> awaiting_decision: report + notification
         investigating --> no_evidence: no valid token
-        investigating --> errored: Workflow failed
+        investigating --> errored: Workflow failed (lead back to pending, offered again)
         awaiting_decision --> applying: Decoy / Block / No action (atomic claim)
-        applying --> closed: Workflow applies the decision
-        awaiting_decision --> expired: no decision in 7 d
+        applying --> closed: Workflow applies the decision (also a claim that lands as the wait times out)
+        awaiting_decision --> expired: no decision in 7 d (conditional write)
         awaiting_decision --> awaiting_decision: Submit abuse report (Cloudflare-hosted only)
     }
 ```
 
-Case **Decoy** and **Block** create active flags for every scraper IP in the case, except Cloudflare IPs and IPs whose token says the fetch was a [verified bot](https://developers.cloudflare.com/bots/concepts/bot/verified-bots/) (both are listed in `decision.json`). Block flags reach the WAF list in one bulk write; if that keeps failing, the case still closes with `waf: ["error"]`, the Worker answers `403` for those IPs, and the daily reconcile adds the missing list items.
+Case **Decoy** and **Block** create active flags for every scraper IP in the case, except Cloudflare IPs and IPs whose token says the fetch was a [verified bot](https://developers.cloudflare.com/bots/concepts/bot/verified-bots/) (both are listed in `decision.json`). Block flags reach the WAF list in one bulk write; if that keeps failing, the case still closes with `waf: ["error"]`, the Worker answers `403` for those IPs, and the daily reconcile adds the missing list items. A **Decoy** for an IP that already had an active block (manual, or from another case) removes its list item in the same way, so the decoy is actually served.
 
 When a case decision (or a manual flag) replaces a flag from another source, for example a trap flag for the same IP, the old provenance is kept at the end of `reason`: `case …: copy found on … (previously trap <ray>: trap hit …)`.
 

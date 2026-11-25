@@ -4,7 +4,7 @@
  */
 import { errorMessage, log } from "../../core/util";
 
-const USER_AGENT = "DiscordBot (https://github.com/DavidJKTofan/cf-honeypot-html-identifier, 0.2)";
+const USER_AGENT = "DiscordBot (https://github.com/DavidJKTofan/cf-honeypot-html-identifier, 0.1.0)";
 
 export class DiscordApiError extends Error {
 	constructor(

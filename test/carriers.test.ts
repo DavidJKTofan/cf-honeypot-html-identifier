@@ -117,6 +117,29 @@ describe("carrier injection and extraction", () => {
 		const { text } = await rewrite("<div>fragment</div>", cfg("meta"), t);
 		expect(text).toContain(`content="${t}"`);
 	});
+
+	it("still injects the meta tag exactly once when </head> is omitted (valid HTML, common when minified)", async () => {
+		const t = await token();
+		for (const page of ["<html><head><title>x</title><body><p>hi", "<html><head><title>x</title><p>no body tag either"]) {
+			const { text } = await rewrite(page, cfg("meta"), t);
+			expect(text.match(new RegExp(`content="${t}"`, "g")), page).toHaveLength(1);
+		}
+		// With </head>, the tag still goes into <head>, and only once.
+		const { text } = await rewrite(PAGE, cfg("meta"), t);
+		expect(text.match(new RegExp(`content="${t}"`, "g"))).toHaveLength(1);
+		expect(text).toContain(`<meta name="csrf-token" content="${t}"></head>`);
+	});
+});
+
+describe("scanner bounds", () => {
+	it("junk token-shaped values never push the real token out of the scan", async () => {
+		const t = await token();
+		const fake = (i: number) => `${i.toString(36).padStart(8, "0")}${"A".repeat(83)}`;
+		const junk = Array.from({ length: 3000 }, (_, i) => `<i data-x="${fake(i)}"></i>`).join("");
+		const scan = await scanHtml(`<html><body>${junk}<meta name="x" content="${t}"></body></html>`, cfg("meta"));
+		expect(scan.tokens).toHaveLength(3001);
+		expect(scan.tokens.at(-1)?.token).toBe(t);
+	});
 });
 
 describe("scanner sees what a browser sees (entity-encoded and padded tokens)", () => {

@@ -44,7 +44,10 @@ function decodeJson(part: string): Record<string, unknown> | null {
 async function fetchKeys(cfg: AccessConfig, fetcher: FetchFn, fresh: boolean): Promise<Jwk[]> {
 	const init: RequestInit = fresh ? { cache: "no-store" } : { cf: { cacheTtl: 300, cacheEverything: true } };
 	const res = await fetcher(`${cfg.teamDomain}/cdn-cgi/access/certs`, { ...init, signal: AbortSignal.timeout(5_000) });
-	if (!res.ok) throw new Error(`access certs: HTTP ${res.status}`);
+	if (!res.ok) {
+		await res.body?.cancel();
+		throw new Error(`access certs: HTTP ${res.status}`);
+	}
 	const body = (await res.json()) as { keys?: Jwk[] };
 	return Array.isArray(body.keys) ? body.keys : [];
 }

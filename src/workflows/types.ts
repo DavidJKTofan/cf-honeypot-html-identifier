@@ -37,6 +37,8 @@ export interface DecodeResult {
 	tokens: TokenEvidence[];
 	/** True when the capture had no valid token and the evidence is the lead's beacon token only. */
 	beaconOnly?: boolean;
+	/** Valid tokens past MAX_CASE_TOKENS, not recorded (a page stuffed with tokens). */
+	omittedTokens?: number;
 }
 
 export type Skipped = { skipped: string };

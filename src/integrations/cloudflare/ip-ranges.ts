@@ -64,7 +64,11 @@ function build(list: { ipv4_cidrs?: string[]; ipv6_cidrs?: string[] }, source: C
 	return { cidrs, source };
 }
 
-/** Live list (edge-cached 24h), falling back to the bundled snapshot. */
+/**
+ * Live list (edge-cached 24h) UNIONED with the bundled snapshot, else the snapshot alone.
+ * The union means a partial or truncated API answer can add ranges but never drop a
+ * protected one (which would let a Cloudflare IP be flagged or blocked).
+ */
 export async function loadCloudflareRanges(): Promise<CloudflareRanges> {
 	try {
 		const res = await fetch(CLOUDFLARE_IPS_URL, {
@@ -73,13 +77,26 @@ export async function loadCloudflareRanges(): Promise<CloudflareRanges> {
 		});
 		if (res.ok) {
 			const body = (await res.json()) as { result?: { ipv4_cidrs?: string[]; ipv6_cidrs?: string[] } };
-			const ranges = build(body.result ?? {}, "api");
-			if (ranges.cidrs.length > 0) return ranges;
+			return unionWithSnapshot(body.result ?? {});
 		}
+		await res.body?.cancel();
 	} catch (err) {
 		log("warn", "cloudflare ip ranges: using bundled snapshot", { error: errorMessage(err) });
 	}
 	return build(CLOUDFLARE_IPS_SNAPSHOT, "snapshot");
+}
+
+/** Live ranges plus every snapshot range ("api" when the live answer had any valid range). */
+export function unionWithSnapshot(live: { ipv4_cidrs?: string[]; ipv6_cidrs?: string[] }): CloudflareRanges {
+	const fromApi = build(live, "api");
+	const union = build(
+		{
+			ipv4_cidrs: [...new Set([...(live.ipv4_cidrs ?? []), ...CLOUDFLARE_IPS_SNAPSHOT.ipv4_cidrs])],
+			ipv6_cidrs: [...new Set([...(live.ipv6_cidrs ?? []), ...CLOUDFLARE_IPS_SNAPSHOT.ipv6_cidrs])],
+		},
+		fromApi.cidrs.length > 0 ? "api" : "snapshot",
+	);
+	return union;
 }
 
 export function isCloudflareIp(ip: string, ranges: CloudflareRanges): boolean {
@@ -102,7 +119,10 @@ export async function checkCloudflareHosting(host: string, ranges: CloudflareRan
 		for (const type of ["A", "AAAA"]) {
 			const url = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=${type}`;
 			const res = await fetch(url, { headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(5_000) });
-			if (!res.ok) continue;
+			if (!res.ok) {
+				await res.body?.cancel();
+				continue;
+			}
 			const body = (await res.json()) as { Answer?: { type: number; data: string }[] };
 			for (const a of body.Answer ?? []) if (a.type === 1 || a.type === 28) ips.push(a.data);
 		}

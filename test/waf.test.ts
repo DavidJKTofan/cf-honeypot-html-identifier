@@ -1,6 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+	applyFlag,
 	recordApprovedFlag,
 	reconcileWafList,
 	removeBlocksFromWafDetailed,
@@ -124,7 +125,7 @@ describe("syncBlocksToWaf", () => {
 		const rows = [];
 		for (const ip of ["198.51.100.21", "198.51.100.22", "2001:DB8::0:23"]) {
 			rows.push(
-				await recordApprovedFlag(env, { kind: "ip", value: ip, action: "block", reason: "case t", source: "case", sourceRef: "case-t", ttlDays: 7 }),
+				(await recordApprovedFlag(env, { kind: "ip", value: ip, action: "block", reason: "case t", source: "case", sourceRef: "case-t", ttlDays: 7 })).row,
 			);
 		}
 		const { api, calls } = fakeApi((c) => (c.method === "POST" ? ok({ operation_id: "op4" }) : ok({ id: "op4", status: "completed", completed: "x" })));
@@ -209,6 +210,48 @@ describe("reconcileWafList", () => {
 
 	it("is skipped without an API client", async () => {
 		await expect(reconcileWafList(env, cfg, { api: null })).resolves.toMatchObject({ status: "skipped" });
+	});
+
+	it("skips orphan removal when the active-block query hits its cap (the rest may be unread)", async () => {
+		const future = nowSec() + 3600;
+		await insertFlag("192.0.2.1", { action: "block", status: "active", expiresAt: future }); // listed
+		await insertFlag("192.0.2.4", { action: "block", status: "active", expiresAt: future }); // missing, re-add
+		const { api, calls } = fakeApi((c) => {
+			if (c.method === "GET" && c.path.endsWith("/items"))
+				return ok([
+					{ id: "i1", ip: "192.0.2.1", comment: "cf-honeypot: a" },
+					{ id: "i2", ip: "192.0.2.2", comment: "cf-honeypot: maybe active beyond the cap" },
+				]);
+			if (c.method === "POST") return ok({ operation_id: "op-add" });
+			return ok({ id: "op", status: "completed", completed: "x" });
+		});
+		const r = await reconcileWafList(env, cfg, { api, maxFlags: 2 });
+		expect(r.removed).toEqual([]);
+		expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+		expect(r.added).toEqual(["192.0.2.4"]);
+	});
+});
+
+describe("block to decoy (H1)", () => {
+	it("removes the WAF list item when an active block becomes a decoy", async () => {
+		await insertFlag("192.0.2.40", { action: "block", status: "active", expiresAt: nowSec() + 3600 });
+		const { api, calls } = fakeApi((c) => {
+			if (c.method === "GET" && c.query.get("search") === "192.0.2.40") return ok([{ id: "i40", ip: "192.0.2.40", comment: "cf-honeypot: t" }]);
+			if (c.method === "DELETE") return ok({ operation_id: "op-d" });
+			return ok({ id: "op-d", status: "completed", completed: "x" });
+		});
+		const decoy = { kind: "ip" as const, value: "192.0.2.40", action: "decoy" as const, reason: "manual", source: "manual" as const, sourceRef: null, ttlDays: 1 };
+		const r = await applyFlag(env, cfg, decoy, { api });
+		expect(r.flag).toMatchObject({ action: "decoy", status: "active" });
+		expect(r.waf).toBe("removed");
+		expect((calls.find((c) => c.method === "DELETE")?.body as { items: { id: string }[] }).items).toEqual([{ id: "i40" }]);
+
+		// Decoy again (no block to undo): no list call at all.
+		const none = fakeApi(() => {
+			throw new Error("no Lists API call expected");
+		});
+		await expect(applyFlag(env, cfg, decoy, { api: none.api })).resolves.toMatchObject({ waf: "not_applicable" });
+		expect(none.calls).toHaveLength(0);
 	});
 });
 
