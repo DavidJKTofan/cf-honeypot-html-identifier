@@ -1,0 +1,38 @@
+-- npx wrangler d1 create delay-fake-data-db -- 
+-- npx wrangler d1 execute delay-fake-data-db --remote --file=./schema.sql -- 
+
+-- Drop existing tables if they exist
+DROP TABLE IF EXISTS ip_logs;
+DROP TABLE IF EXISTS suspicious_requests;
+
+-- Create the main IP logging table
+CREATE TABLE ip_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip_address TEXT UNIQUE NOT NULL,
+  token TEXT UNIQUE,
+  user_agent TEXT,
+  method TEXT,
+  url TEXT,
+  timestamp TEXT NOT NULL,
+  last_seen TEXT,
+  request_count INTEGER DEFAULT 1,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for better query performance
+CREATE INDEX idx_ip_address ON ip_logs(ip_address);
+CREATE INDEX idx_timestamp ON ip_logs(timestamp);
+CREATE INDEX idx_request_count ON ip_logs(request_count);
+CREATE INDEX idx_last_seen ON ip_logs(last_seen);
+
+-- Create a table for tracking suspicious patterns and to use as isBlockedIP list
+CREATE TABLE suspicious_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip_address TEXT NOT NULL,
+  description TEXT,
+  timestamp TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_suspicious_ip ON suspicious_requests(ip_address);
+CREATE INDEX idx_suspicious_timestamp ON suspicious_requests(timestamp);

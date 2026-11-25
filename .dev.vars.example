@@ -1,0 +1,30 @@
+# Copy to .dev.vars for local development (never commit .dev.vars).
+# Generate values with:  openssl rand -base64 32
+TOKEN_KEY="base64-encoded-32-byte-key"
+ADMIN_TOKEN="long-random-admin-bearer-token"
+
+# Optional: previous key, tried on decode during key rotation.
+# TOKEN_KEY_PREVIOUS=""
+
+# Optional: scoped Cloudflare API token enabling WAF List sync, Intel, URL Scanner
+# and Brand Protection intake. Permissions: Account Filter Lists Edit, Intel Read,
+# URL Scanner Edit. Without it, those Workflow steps report "skipped".
+# CF_API_TOKEN=""
+
+# --- Account-specific IDs (secrets so they never appear in the public repo) ---
+# Upload everything in this file with: npx wrangler deploy --secrets-file .dev.vars
+# ACCOUNT_ID="<your-cloudflare-account-id>"
+# WAF_LIST_ID="<id-of-your-honeypot_blocked-ip-list>"
+
+# --- Cloudflare Access in front of ADMIN_PREFIX (src/admin/README.md#cloudflare-access) ---
+# With both set, the admin API requires a valid Access JWT and ignores ADMIN_TOKEN.
+# ACCESS_TEAM_DOMAIN="<team>.cloudflareaccess.com"
+# ACCESS_AUD="<application-audience-tag>"
+
+# --- Discord approvals (src/notify/discord/README.md) ---
+# DISCORD_APPLICATION_ID="<application-id>"
+# DISCORD_PUBLIC_KEY="<application-public-key-hex>"
+# DISCORD_CHANNEL_ID="<channel-id>"
+# DISCORD_APPROVER_IDS="<your-discord-user-id>"
+# DISCORD_APPROVER_ROLE_IDS=""
+# DISCORD_BOT_TOKEN=""        # or: npx wrangler secret put DISCORD_BOT_TOKEN

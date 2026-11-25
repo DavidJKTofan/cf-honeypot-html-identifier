@@ -1,0 +1,20 @@
+node_modules/
+.wrangler/
+dist/
+coverage/
+
+# Local secrets (never commit)
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+
+# Agent worktrees (Claude Code)
+.claude/worktrees/
+
+# OS / editor
+.DS_Store
+*.log
+
+# Demo clone content (scraped pages carry tokens that name the presenter's machine)
+demo/clone/site/

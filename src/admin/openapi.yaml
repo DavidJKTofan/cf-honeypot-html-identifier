@@ -1,0 +1,747 @@
+openapi: 3.1.0
+info:
+  title: cf-honeypot-html-identifier admin API
+  version: 0.7.0
+  summary: Decode identifiers, review leads, run investigations, decide cases and manage flags.
+  description: |
+    Admin API of the honeypot Worker, served under `ADMIN_PREFIX` (default `/__hp`) on every
+    canonical host. Every action that enforces anything is an explicit human action; the same
+    functions back the Discord buttons (`src/approvals/actions.ts`).
+
+    **Authentication.** In production, [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/)
+    protects `ADMIN_PREFIX`: a person signs in through an Allow policy (browser, `CF_Authorization`
+    cookie), and the CLI sends a service token (`CF-Access-Client-Id` + `CF-Access-Client-Secret`).
+    Access forwards a signed JWT (`Cf-Access-Jwt-Assertion`) that the Worker verifies (signature,
+    audience, issuer, expiry); the bearer token is then ignored. Without Access configured
+    (`ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` unset, e.g. local dev), `Authorization: Bearer <ADMIN_TOKEN>`
+    is required.
+
+    **Unauthenticated requests get a plain `404`**, so the admin surface is not advertised. With Access
+    in front, a browser without a session is first redirected to the Access login page instead.
+
+    **Edge rules run first.** The zone's WAF (and the `honeypot_blocked` IP list rule) evaluate admin
+    requests before the Worker. A challenged request carries `cf-mitigated: challenge`.
+
+    See `src/admin/README.md` for setup, and `scripts/hp.mjs` (`npm run hp -- <command>`) for a CLI.
+  license:
+    name: See repository
+    url: https://github.com/DavidJKTofan/cf-honeypot-html-identifier
+servers:
+  - url: https://{host}{prefix}
+    description: A canonical host of the deployment
+    variables:
+      host:
+        default: honeypot.automatic-demo.com
+      prefix:
+        default: /__hp
+  - url: http://localhost:8787/__hp
+    description: Local development (`npm run dev`, bearer token)
+security:
+  - accessClientId: []
+    accessClientSecret: []
+  - accessCookie: []
+  - bearerAuth: []
+tags:
+  - name: identity
+    description: Your own identifier, and decoding identifiers found in copies
+  - name: leads
+    description: Pending clone leads (beacon, foreign Referer, Brand Protection)
+  - name: cases
+    description: Investigations (InvestigateWorkflow), evidence and human decisions
+  - name: flags
+    description: Trap flags and manual decoy/block flags (WAF list for blocks)
+  - name: ops
+    description: Notifications and maintenance
+
+paths:
+  /whoami:
+    get:
+      tags: [identity]
+      operationId: whoami
+      summary: Show your own token, fingerprint and admin identity
+      description: |
+        Seals a token for *this* request and returns it with the fingerprint, plus who you are
+        authenticated as (`actor`) and how (`auth`). Useful to check Access and to see what a scraper's
+        token would contain. CLI: `hp whoami`.
+      responses:
+        "200":
+          description: Your token and fingerprint
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [actor, auth, token, fingerprint]
+                properties:
+                  actor: { $ref: "#/components/schemas/Actor" }
+                  auth: { type: string, enum: [access, bearer] }
+                  token: { $ref: "#/components/schemas/Token" }
+                  fingerprint: { $ref: "#/components/schemas/RequestSignals" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /decode:
+    post:
+      tags: [identity]
+      operationId: decode
+      summary: Find and verify identifiers in a token, pasted HTML or a URL
+      description: |
+        Extracts every token-shaped attribute (entity-decoded and trimmed, so `&#100;…` still matches)
+        and zero-width runs, opens each token with the key ring, and looks up its Ray ID in Analytics
+        Engine. Nothing is stored. Send pasted HTML as `html_b64`, because WAF managed rules may block raw
+        `<script>` markup in JSON. `url` is fetched by the Worker with `CAPTURE_USER_AGENT` (the request
+        still carries `CF-Worker`). CLI: `hp decode <url|file|token>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Exactly one of the properties.
+              properties:
+                token: { type: string, description: A raw 91-character token }
+                html: { type: string, description: Raw HTML (may be blocked by WAF managed rules) }
+                html_b64: { type: string, description: Base64-encoded HTML (preferred for pages) }
+                url: { type: string, format: uri, description: An absolute http(s) URL to fetch }
+            examples:
+              url: { value: { url: "https://suspected-clone.example/page" } }
+              token:
+                summary: Synthetic token sealed with the public test key from vitest.config.ts (203.0.113.42, AS64496)
+                value: { token: "gD-06MhE0H1ckPIIQPhiskbl2WlYC7q7m-grgz6XpxkzAyw77Bazf3E3yvs8S3fDxQS3BeWOEY9QnUiSkVQVljNF0eg" }
+      responses:
+        "200":
+          description: Decoded tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source: { type: string, enum: [token, html, url] }
+                  fetched:
+                    type: object
+                    description: Only for `url`
+                    properties:
+                      status: { type: integer }
+                      finalUrl: { type: string }
+                      sha256: { type: string }
+                      bytes: { type: integer }
+                      truncated: { type: boolean, description: True when only the first 2 MiB were read }
+                  markers:
+                    type: object
+                    properties:
+                      beaconScript: { type: boolean }
+                      trapLink: { type: boolean }
+                      candidates: { type: integer }
+                  valid: { type: integer, description: Number of tokens that opened }
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/DecodedToken" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /leads:
+    get:
+      tags: [leads]
+      operationId: listLeads
+      summary: List clone leads
+      description: Leads are deduplicated by host. CLI `hp leads [pending|approved|dismissed|all]`.
+      parameters:
+        - name: status
+          in: query
+          description: Filter; `all` (or any other value) lists every status.
+          schema: { type: string, enum: [pending, approved, dismissed, all], default: pending }
+      responses:
+        "200":
+          description: Up to 100 leads, most recently seen first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  leads:
+                    type: array
+                    items: { $ref: "#/components/schemas/Lead" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /leads/{id}/approve:
+    post:
+      tags: [leads]
+      operationId: approveLead
+      summary: Investigate a lead (starts one InvestigateWorkflow)
+      description: |
+        Atomically claims the lead (`pending` → `approved`) and starts one investigation of its sample URL
+        (or `url`). Refused when the lead is no longer pending or the host already has an open case.
+        Nothing is enforced. Same as the Discord **Investigate** button. CLI: `hp approve-lead <id> [url]`.
+      parameters:
+        - { $ref: "#/components/parameters/LeadId" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string, format: uri, description: Investigate this URL instead of the lead's sample URL }
+      responses:
+        "202": { $ref: "#/components/responses/ActionOk" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ActionRefused" }
+
+  /leads/{id}/dismiss:
+    post:
+      tags: [leads]
+      operationId: dismissLead
+      summary: Dismiss a lead
+      description: Atomically marks a pending lead `dismissed`; later beacons only add hits. CLI `hp dismiss-lead <id>`.
+      parameters:
+        - { $ref: "#/components/parameters/LeadId" }
+      responses:
+        "200": { $ref: "#/components/responses/ActionOk" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ActionRefused" }
+
+  /cases:
+    get:
+      tags: [cases]
+      operationId: listCases
+      summary: List cases
+      description: The 50 most recently updated cases. CLI `hp cases`.
+      responses:
+        "200":
+          description: Cases
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cases:
+                    type: array
+                    items: { $ref: "#/components/schemas/Case" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [cases]
+      operationId: createCase
+      summary: Investigate a URL you found yourself (manual case)
+      description: |
+        Starts one InvestigateWorkflow without a lead. Refused for a canonical host and when the host already
+        has an open case. CLI `hp case <url>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri }
+      responses:
+        "202":
+          description: Investigation started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: true }
+                  caseId: { type: string }
+                  url: { type: string }
+                  host: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cases/{id}:
+    get:
+      tags: [cases]
+      operationId: getCase
+      summary: Case status, decoded tokens and Workflow status
+      description: CLI `hp case-status <id>`.
+      parameters:
+        - { $ref: "#/components/parameters/CaseId" }
+      responses:
+        "200":
+          description: The case
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  case: { $ref: "#/components/schemas/Case" }
+                  tokens:
+                    type: array
+                    items: { $ref: "#/components/schemas/CaseToken" }
+                  workflow:
+                    type: object
+                    description: Workflow instance status (or `{error}`)
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cases/{id}/report:
+    get:
+      tags: [cases]
+      operationId: getCaseReport
+      summary: The evidence report (Markdown, or JSON)
+      description: |
+        `report.md` for humans or `report.json` for machines: capture hash, evidence strength (confirmed, or
+        unconfirmed when only the beacon reported a token), attribution, live-proxy and verified-bot markers,
+        Cloudflare hosting, URL Scanner and Threat Intel. CLI `hp report <id> [json]`.
+      parameters:
+        - { $ref: "#/components/parameters/CaseId" }
+        - name: format
+          in: query
+          schema: { type: string, enum: [json] }
+      responses:
+        "200":
+          description: The report
+          content:
+            text/markdown: { schema: { type: string } }
+            application/json: { schema: { type: object } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cases/{id}/evidence/{file}:
+    get:
+      tags: [cases]
+      operationId: getCaseEvidence
+      summary: One file of the evidence bundle in R2
+      description: |
+        Served with `content-security-policy: sandbox` and `nosniff`; the captured HTML is returned as
+        `text/plain` so it never renders. CLI `hp evidence <id> <file>`.
+      parameters:
+        - { $ref: "#/components/parameters/CaseId" }
+        - name: file
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - report.json
+              - report.md
+              - snapshot.html
+              - urlscan.json
+              - intel.json
+              - screenshot.png
+              - decision.json
+              - abuse-report-draft.json
+              - abuse-report-result.json
+      responses:
+        "200":
+          description: The file
+          content:
+            application/json: { schema: { type: object } }
+            text/plain: { schema: { type: string } }
+            text/markdown: { schema: { type: string } }
+            image/png: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cases/{id}/decision:
+    post:
+      tags: [cases]
+      operationId: decideCase
+      summary: Decide a case awaiting a decision (decoy, block or none)
+      description: |
+        Atomically claims the case (`awaiting_decision` → `applying`) and sends the decision to its Workflow,
+        which flags every scraper IP of the case except Cloudflare IPs and verified bots (block also writes the
+        WAF list). Same as the Discord case buttons. CLI `hp decide <id> <decoy|block|none> [ttlDays]`.
+      parameters:
+        - { $ref: "#/components/parameters/CaseId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Decision" }
+      responses:
+        "202": { $ref: "#/components/responses/ActionOk" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ActionRefused" }
+
+  /cases/{id}/abuse-report:
+    post:
+      tags: [cases]
+      operationId: submitAbuseReport
+      summary: Submit the drafted Cloudflare abuse report (legal statement)
+      description: |
+        Only with `ABUSE_REPORTS="submit"`, `ABUSE_REPORTER_JSON` and a Cloudflare-hosted copy whose capture
+        holds a token (so a draft exists). Submitted at most once per case. DMCA reports are statements made
+        under penalty of perjury. CLI `hp abuse-report <id>`.
+      parameters:
+        - { $ref: "#/components/parameters/CaseId" }
+      responses:
+        "201": { $ref: "#/components/responses/ActionOk" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ActionRefused" }
+
+  /flags:
+    get:
+      tags: [flags]
+      operationId: listFlags
+      summary: List flags
+      description: CLI `hp flags [pending|active|rejected]`.
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, active, rejected] }
+      responses:
+        "200":
+          description: Up to 100 flags, most recently updated first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  flags:
+                    type: array
+                    items: { $ref: "#/components/schemas/Flag" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [flags]
+      operationId: createFlag
+      summary: Manually flag one IP (or a JA4) for decoy or block
+      description: |
+        Active immediately (a human action). A single IPv4 or IPv6 address only: CIDR ranges and Cloudflare IPs
+        are refused. JA4 flags are possible but shared by many real users. CLI `hp flag <ip> [decoy|block] [ttlDays]`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ip: { type: string, examples: ["203.0.113.7"] }
+                ja4: { type: string }
+                action: { type: string, enum: [decoy, block], default: decoy }
+                reason: { type: string, maxLength: 200 }
+                ttlDays: { type: integer, minimum: 1, maximum: 365, description: Default FLAG_TTL_DAYS }
+      responses:
+        "201":
+          description: Flag applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  flag: { $ref: "#/components/schemas/Flag" }
+                  waf: { $ref: "#/components/schemas/WafSync" }
+                  warning: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /flags/approve:
+    post:
+      tags: [flags]
+      operationId: approveFlags
+      summary: Approve pending trap flags (decoy, or block)
+      description: |
+        Only rows still `pending` change. Cloudflare IPs are rejected instead. Blocks reach the WAF list in one
+        bulk write. Same as the digest's **Decoy/Block <ip>** buttons. CLI `hp approve-flags <ind…>|--all [--block]`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                indicators: { type: array, items: { type: string, examples: ["ip:203.0.113.7"] } }
+                all: { type: boolean, description: Every pending flag (up to 500) }
+                action: { type: string, enum: [decoy, block] }
+                ttlDays: { type: integer, minimum: 1, maximum: 365 }
+      responses:
+        "200": { $ref: "#/components/responses/ActionOk" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /flags/reject:
+    post:
+      tags: [flags]
+      operationId: rejectFlags
+      summary: Reject pending trap flags
+      description: Marks them `rejected` (kept up to PENDING_TTL_DAYS, nothing enforced). CLI `hp reject-flags <ind…>`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                indicators: { type: array, items: { type: string } }
+                all: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/ActionOk" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /flags/{indicator}:
+    delete:
+      tags: [flags]
+      operationId: deleteFlag
+      summary: Remove a flag (unflag), including its WAF list item
+      description: |
+        The IP is canonicalised first. If the WAF list item can't be removed now, the response has a `note` and
+        daily maintenance removes it. CLI `hp unflag <indicator>`.
+      parameters:
+        - name: indicator
+          in: path
+          required: true
+          description: URL-encoded indicator, e.g. `ip:203.0.113.7`
+          schema: { type: string }
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  flag: { $ref: "#/components/schemas/Flag" }
+                  waf: { $ref: "#/components/schemas/WafSync" }
+                  note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /notify/test:
+    post:
+      tags: [ops]
+      operationId: notifyTest
+      summary: Send a test message to the approval channel
+      description: The Discord message has a **Check access** button (shows your user ID and approver status). CLI `hp notify-test`.
+      responses:
+        "200":
+          description: Sent (or not)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  channel: { type: string }
+                  interactive: { type: boolean }
+                  ref: { type: [string, "null"] }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Notifier not configured
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /notify/flags:
+    post:
+      tags: [ops]
+      operationId: notifyFlags
+      summary: Send the pending trap-flag digest now (top 5 by hits)
+      description: It is also sent by the daily maintenance run. CLI `hp notify-flags`.
+      responses:
+        "200":
+          description: Digest sent, or nothing pending
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  sent: { type: boolean }
+                  total: { type: integer }
+                  ref: { type: [string, "null"] }
+                  reason: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /maintenance/run:
+    post:
+      tags: [ops]
+      operationId: runMaintenance
+      summary: Start a MaintenanceWorkflow run now
+      description: |
+        Expires flags (WAF list items first), reconciles the WAF list, purges stale leads, turns foreign Referers and
+        Brand Protection matches into pending leads, and sends the digest. Also runs daily. CLI `hp maintenance`.
+      responses:
+        "202":
+          description: Started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  instance: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    accessClientId:
+      type: apiKey
+      in: header
+      name: CF-Access-Client-Id
+      description: Cloudflare Access service token Client ID (send together with the secret). Used by the CLI.
+    accessClientSecret:
+      type: apiKey
+      in: header
+      name: CF-Access-Client-Secret
+      description: Cloudflare Access service token Client Secret.
+    accessCookie:
+      type: apiKey
+      in: cookie
+      name: CF_Authorization
+      description: Set by Access after a browser login through an Allow policy (for example "Allow · Owner (Passkey)").
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "`ADMIN_TOKEN`. Only used when the Worker has no Access configuration (local dev)."
+
+  parameters:
+    LeadId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    CaseId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, examples: ["case-mwvbktm8-a17a9861"] }
+
+  responses:
+    NotFound:
+      description: Not authenticated (plain `Not Found`, the surface is not advertised), or the resource doesn't exist (JSON `{error}`)
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ActionOk:
+      description: The human action was applied
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ActionResult" }
+    ActionRefused:
+      description: Refused (already handled, open case, disabled feature…); nothing changed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ActionResult" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    Actor:
+      type: object
+      description: Who performed an action; stored as `decided_by` and in logs.
+      properties:
+        id: { type: string, examples: ["access:owner@example.com", "access-service:abc123.access", "admin"] }
+        label: { type: string }
+    ActionResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        summary: { type: string }
+        notifyRef: { type: [string, "null"] }
+        data: { type: object }
+    Token:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{91}$"
+      description: AES-256-GCM sealed fingerprint, base64url
+    Fingerprint:
+      type: object
+      description: The fields sealed inside a token
+      properties:
+        issuedAt: { type: integer, description: Unix seconds }
+        ip: { type: string }
+        asn: { type: integer }
+        country: { type: string }
+        colo: { type: string }
+        botScore: { type: [integer, "null"] }
+        verifiedBot: { type: boolean }
+        jsDetectionPassed: { type: boolean }
+        botManagement: { type: boolean }
+        rayId: { type: string, pattern: "^[0-9a-f]{16}$" }
+    RequestSignals:
+      allOf:
+        - $ref: "#/components/schemas/Fingerprint"
+        - type: object
+          description: Plus the non-sealed request detail written to Analytics Engine
+          properties:
+            host: { type: string }
+            path: { type: string }
+            userAgent: { type: string }
+            ja4: { type: string }
+            asOrganization: { type: string }
+            city: { type: string }
+            cfWorker: { type: string }
+    DecodedToken:
+      type: object
+      properties:
+        carrier: { type: string, examples: [meta, meta-fallback, form, zw, "attr:link[href]"] }
+        token: { type: string }
+        valid: { type: boolean }
+        fingerprint: { oneOf: [{ $ref: "#/components/schemas/Fingerprint" }, { type: "null" }] }
+        issuedAtIso: { type: [string, "null"] }
+        enrichment: { type: [object, "null"], description: Analytics Engine row for the Ray ID (UA, JA4, path, CF-Worker zone) }
+        enrichmentError: { type: string }
+    Lead:
+      type: object
+      properties:
+        id: { type: integer }
+        host: { type: string }
+        sample_url: { type: [string, "null"] }
+        source: { type: string, enum: [beacon, referer, brand_protection, manual] }
+        token_ray: { type: [string, "null"] }
+        token: { type: [string, "null"], description: The scraper's beacon-reported token (evidence when a capture finds none) }
+        token_ip: { type: [string, "null"], description: The scraper IP inside `token` }
+        status: { type: string, enum: [pending, approved, dismissed] }
+        first_seen: { type: integer }
+        last_seen: { type: integer }
+        hits: { type: integer }
+        case_id: { type: [string, "null"] }
+        notify_ref: { type: [string, "null"] }
+        reopened_at: { type: [integer, "null"], description: Set when a re-scrape from a new IP re-opened the lead }
+    Case:
+      type: object
+      properties:
+        id: { type: string }
+        lead_id: { type: [integer, "null"] }
+        url: { type: string }
+        host: { type: string }
+        status: { type: string, enum: [collecting, awaiting_decision, applying, closed, no_evidence, expired, errored] }
+        created_at: { type: integer }
+        updated_at: { type: integer }
+        token_count: { type: integer }
+        report_key: { type: [string, "null"] }
+        decision: { type: [string, "null"], description: JSON of the applied decision }
+        notify_ref: { type: [string, "null"] }
+        hosted_on_cloudflare: { type: [integer, "null"] }
+        abuse_report: { type: [string, "null"] }
+        decided_by: { type: [string, "null"] }
+    CaseToken:
+      type: object
+      properties:
+        case_id: { type: string }
+        ray_id: { type: string }
+        ip: { type: string }
+        asn: { type: [integer, "null"] }
+        country: { type: [string, "null"] }
+        issued_at: { type: integer }
+        carrier: { type: [string, "null"], examples: [meta, beacon] }
+    Decision:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [decoy, block, none] }
+        ttlDays: { type: integer, minimum: 1, maximum: 365, description: Default FLAG_TTL_DAYS }
+        ips: { type: array, maxItems: 100, items: { type: string }, description: Subset of the case's scraper IPs }
+        note: { type: string, maxLength: 500 }
+    Flag:
+      type: object
+      properties:
+        indicator: { type: string, examples: ["ip:203.0.113.7"] }
+        kind: { type: string, enum: [ip, ja4] }
+        action: { type: string, enum: [decoy, block] }
+        status: { type: string, enum: [pending, active, rejected] }
+        reason: { type: [string, "null"] }
+        source: { type: string, enum: [trap, case, manual] }
+        source_ref: { type: [string, "null"] }
+        created_at: { type: integer }
+        updated_at: { type: integer }
+        expires_at: { type: integer }
+        hits: { type: integer }
+    WafSync:
+      type: string
+      enum: [added, removed, pending, absent, skipped, not_applicable, error]

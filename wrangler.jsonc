@@ -1,0 +1,134 @@
+/**
+ * cf-honeypot-html-identifier — Wrangler configuration
+ * Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "cf-honeypot-html-identifier",
+	// No account_id here (public repo): set CLOUDFLARE_ACCOUNT_ID in a gitignored .env (see .env.example).
+	"main": "src/index.ts",
+	// Keep current: https://developers.cloudflare.com/workers/configuration/compatibility-dates/
+	"compatibility_date": "2026-11-23",
+	"compatibility_flags": ["nodejs_compat"],
+	"upload_source_maps": true,
+
+	// Only reachable through the zone, so the zone's WAF, Bot Management and
+	// WAF List rules always run before this Worker.
+	"workers_dev": false,
+	"preview_urls": false,
+	"routes": [{ "pattern": "honeypot.automatic-demo.com", "custom_domain": true }],
+
+	// Demo site. In production, remove "assets" and put the Worker on a route in
+	// front of your origin: the Worker then forwards with fetch(request).
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS",
+		"run_worker_first": true
+	},
+
+	"observability": {
+		"enabled": true,
+		// 1 = every invocation. Lower this (e.g. 0.05) for high-traffic production sites.
+		"logs": { "head_sampling_rate": 1 },
+		"traces": { "enabled": true, "head_sampling_rate": 0.01 }
+	},
+
+	// Small, bounded tables only: flags, leads, cases. Never one row per request.
+	// No database_id (public repo): Wrangler reuses the deployed binding, else the database with this
+	// name, else provisions it. https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "honeypot-html-identifier-db",
+			"migrations_dir": "migrations"
+		}
+	],
+
+	// Evidence bundles (HTML snapshots, scan screenshots, reports).
+	"r2_buckets": [{ "binding": "EVIDENCE", "bucket_name": "honeypot-evidence" }],
+
+	// One data point per tokenized page / honeypot event (non-blocking, 3-month retention).
+	"analytics_engine_datasets": [{ "binding": "EVENTS", "dataset": "honeypot_events" }],
+
+	// Query Analytics Engine from the Worker without an API token.
+	"analytics": { "binding": "ANALYTICS_SQL", "remote": true },
+
+	"workflows": [
+		{
+			"name": "honeypot-investigate",
+			"binding": "INVESTIGATE",
+			"class_name": "InvestigateWorkflow",
+			// Approved cases only; cap parallel investigations so approvals can't flood Workflows.
+			"concurrency": { "limit": 5 }
+		},
+		{
+			"name": "honeypot-maintenance",
+			"binding": "MAINTENANCE",
+			"class_name": "MaintenanceWorkflow",
+			// Daily: expiry, hotlink aggregation, Brand Protection intake, pending-flag digest.
+			"schedules": ["17 3 * * *"]
+		}
+	],
+
+	// Bound D1 writes from public endpoints (per Cloudflare location, approximate).
+	// https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
+	// namespace_id: account-unique integer string. period: 10 or 60 seconds.
+	"ratelimits": [
+		// Keys: "beacon:<clone host>" and "beacon-token:<token Ray ID>", so neither one host
+		// nor one token (which anyone can obtain by loading a page) can fan out quickly.
+		{ "name": "BEACON_LIMITER", "namespace_id": "4201", "simple": { "limit": 10, "period": 60 } },
+		// Key: "trap:<ip>". At most 2 pending-flag writes per IP and minute.
+		{ "name": "TRAP_LIMITER", "namespace_id": "4202", "simple": { "limit": 2, "period": 60 } },
+		// Caps approval notifications (Discord etc.) so a burst of leads can't flood the channel.
+		{ "name": "NOTIFY_LIMITER", "namespace_id": "4203", "simple": { "limit": 20, "period": 60 } },
+		// Global cap on beacon lead upserts, whatever the host or token. Real clones are few and
+		// each is deduplicated by host, so 30/min per location leaves ample headroom while a
+		// host-rotation flood costs at most 30 D1 writes per minute per location.
+		{ "name": "LEAD_LIMITER", "namespace_id": "4204", "simple": { "limit": 30, "period": 60 } },
+		// Global cap on trap pending-flag writes. TRAP_LIMITER is per IP, so a crawl spread over
+		// 100k proxy IPs would otherwise mean 100k upserts. The decoy is served either way.
+		{ "name": "TRAP_GLOBAL_LIMITER", "namespace_id": "4205", "simple": { "limit": 30, "period": 60 } }
+	],
+
+	"vars": {
+		// Hosts where the site legitimately runs. Anything else running our HTML is a clone.
+		"CANONICAL_HOSTS": "honeypot.automatic-demo.com,localhost,127.0.0.1",
+		"ADMIN_PREFIX": "/__hp",
+		"TRAP_PATH": "/catalog/full-export",
+		"BEACON_PATH": "/api/rum",
+		"BEACON_SCRIPT_PATH": "/assets/js/rum.js",
+		// Comma list of: meta, trap, beacon, zw (zero-width text, opt-in), form (opt-in)
+		"CARRIERS": "meta,trap,beacon",
+		"META_NAME": "csrf-token",
+		"FORM_FIELD": "_csrf",
+		"TARPIT_MS": "5000",
+		"FLAG_TTL_DAYS": "7",
+		"PENDING_TTL_DAYS": "14",
+		// Referer host suffixes that are never treated as clones (search engines, social).
+		"REFERER_IGNORE": "google.com,bing.com,duckduckgo.com,yahoo.com,baidu.com,yandex.ru,yandex.com,ecosia.org,facebook.com,t.co,x.com,linkedin.com,reddit.com,slack.com",
+		"URLSCAN_VISIBILITY": "Unlisted",
+		"INTEL_MAX_IPS_PER_CASE": "3",
+		// Evidence capture User-Agent. Empty = a current desktop Chrome UA (src/core/config.ts).
+		// Never a self-identifying UA: clones cloak by UA (they also see CF-Worker and Cloudflare's ASN).
+		"CAPTURE_USER_AGENT": "",
+
+		// Human-in-the-loop approvals: "discord" (bot + buttons), "discord-webhook" (notify only), "none".
+		// See src/notify/README.md. Slack / Telegram adapters can implement the same interface.
+		// Discord IDs are Worker secrets (not in this public repo): see src/notify/discord/README.md.
+		"NOTIFY_CHANNEL": "discord",
+		"DISCORD_INTERACTIONS_PATH": "/integrations/discord/interactions",
+		"DISCORD_API_BASE": "https://discord.com/api/v10",
+
+		// Cloudflare abuse reports for clones proxied by / hosted on Cloudflare:
+		// "draft" = evidence bundle includes a ready-to-review draft; "submit" = also allow an
+		// explicit human "submit" action (needs ABUSE_REPORTER_JSON + Trust and Safety Write).
+		"ABUSE_REPORTS": "draft",
+		"ABUSE_REPORT_TYPE": "abuse_dmca"
+	},
+
+	// Optional secrets (not listed; see .dev.vars.example and src/env.d.ts):
+	//   account-specific IDs kept out of the repo: ACCOUNT_ID, WAF_LIST_ID,
+	//   DISCORD_APPLICATION_ID, DISCORD_PUBLIC_KEY, DISCORD_CHANNEL_ID, DISCORD_APPROVER_IDS, DISCORD_APPROVER_ROLE_IDS
+	//   credentials: TOKEN_KEY_PREVIOUS, CF_API_TOKEN, DISCORD_BOT_TOKEN, DISCORD_WEBHOOK_URL, ABUSE_REPORTER_JSON
+	"secrets": { "required": ["TOKEN_KEY", "ADMIN_TOKEN"] }
+}

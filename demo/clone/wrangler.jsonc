@@ -1,0 +1,24 @@
+/**
+ * Demo clone Worker (see DEMO.md). Deploy it on a hostname in a SECOND zone you control,
+ * never on the honeypot's own host (that would be a canonical host, not a clone).
+ *
+ *   demo/scrape.sh                                         # fills ./site
+ *   npx wrangler deploy --config demo/clone/wrangler.jsonc # account: CLOUDFLARE_ACCOUNT_ID
+ *   npx wrangler delete --config demo/clone/wrangler.jsonc # after the demo
+ */
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "hp-demo-clone",
+	"main": "worker.js",
+	"compatibility_date": "2026-11-23",
+	"workers_dev": false,
+	"preview_urls": false,
+	// Replace with your clone hostname. Use a fresh subdomain per demo, so the honeypot sees a new lead.
+	"routes": [{ "pattern": "clone.example.com", "custom_domain": true }],
+	"assets": { "directory": "./site", "binding": "ASSETS", "run_worker_first": ["/live", "/live/*"] },
+	"vars": {
+		"ORIGIN": "https://honeypot.automatic-demo.com",
+		"BRAND_FROM": "Example Trail Co.",
+		"BRAND_TO": "TrailDeals Outlet"
+	}
+}
