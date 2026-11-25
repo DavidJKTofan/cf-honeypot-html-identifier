@@ -16,6 +16,7 @@ import { canonicalIp } from "../identity/token";
 import { cfApi, type CfApi, type CfApiOptions } from "../integrations/cloudflare/api";
 import { isCloudflareIp, loadCloudflareRanges, type CloudflareRanges } from "../integrations/cloudflare/ip-ranges";
 import {
+	ACTIVE_BLOCK_FLAGS_LIMIT,
 	activeBlockFlags,
 	deleteFlag,
 	getFlag,
@@ -26,6 +27,7 @@ import {
 	type FlagKind,
 	type FlagRow,
 	type FlagSource,
+	type UpsertedFlag,
 } from "../storage/d1";
 
 /**
@@ -207,19 +209,35 @@ export interface ApprovedFlagInput {
 
 /**
  * Validate, protect and store one human-approved flag WITHOUT touching the WAF list,
- * so callers can batch every block into one `syncBlocksToWaf` call.
+ * so callers can batch every block into one `syncBlocksToWaf` call (and every
+ * block-to-decoy change into one `removeBlocksFromWaf` call, see `downgradedBlockIp`).
  * Throws InvalidIndicatorError or ProtectedIpError.
  */
-export async function recordApprovedFlag(env: Env, f: ApprovedFlagInput, ranges?: CloudflareRanges): Promise<FlagRow> {
+export async function recordApprovedFlag(env: Env, f: ApprovedFlagInput, ranges?: CloudflareRanges): Promise<UpsertedFlag> {
 	const value = normalizeIndicatorValue(f.kind, f.value);
 	if (f.kind === "ip" && isCloudflareIp(value, ranges ?? (await loadCloudflareRanges()))) throw new ProtectedIpError(value);
 	return upsertActiveFlag(env.DB, { ...f, value });
 }
 
+/**
+ * The IP whose WAF list item must be removed because this approval turned an active block
+ * into a decoy, or null. Without the removal the IP stays blocked at the edge (the list rule
+ * runs before the Worker) until the daily reconcile.
+ */
+export function downgradedBlockIp(u: UpsertedFlag): string | null {
+	if (u.row.kind !== "ip" || u.row.action === "block") return null;
+	if (u.previous?.action !== "block" || u.previous.status !== "active") return null;
+	return parseIndicator(u.row.indicator)?.value ?? null;
+}
+
 export async function applyFlag(env: Env, cfg: Config, f: ApprovedFlagInput, opts: WafOptions = {}): Promise<{ flag: FlagRow; waf: WafSync }> {
-	const flag = await recordApprovedFlag(env, f);
-	const waf = await syncBlocksToWaf(env, cfg, [flag], opts);
-	log("info", "flag applied", { indicator: flag.indicator, action: flag.action, source: flag.source, waf });
+	const approved = await recordApprovedFlag(env, f);
+	const flag = approved.row;
+	const downgraded = downgradedBlockIp(approved);
+	const waf = downgraded
+		? await removeBlocksFromWaf(env, cfg, [downgraded], { ...opts, throwOnError: false })
+		: await syncBlocksToWaf(env, cfg, [flag], opts);
+	log("info", "flag applied", { indicator: flag.indicator, action: flag.action, source: flag.source, waf, removedBlock: downgraded !== null });
 	return { flag, waf };
 }
 
@@ -264,7 +282,7 @@ export interface ReconcileResult {
 export async function reconcileWafList(
 	env: Env,
 	cfg: Config,
-	opts: WafOptions & { maxPages?: number; maxChanges?: number } = {},
+	opts: WafOptions & { maxPages?: number; maxChanges?: number; /** Cap on active block flags read from D1 (tests). */ maxFlags?: number } = {},
 ): Promise<ReconcileResult> {
 	const empty: ReconcileResult = { status: "skipped", listed: 0, truncated: false, removed: [], added: [], waf: { remove: "skipped", add: "skipped" } };
 	const api = resolveApi(env, opts);
@@ -297,11 +315,17 @@ export async function reconcileWafList(
 	}
 
 	const activeFlags = new Map<string, BlockFlag>();
-	for (const f of await activeBlockFlags(env.DB, nowSec())) {
+	const maxFlags = opts.maxFlags ?? ACTIVE_BLOCK_FLAGS_LIMIT;
+	const blockRows = await activeBlockFlags(env.DB, nowSec(), maxFlags);
+	for (const f of blockRows) {
 		const ip = canonicalIp(parseIndicator(f.indicator)?.value ?? "");
 		if (ip) activeFlags.set(ip, f);
 	}
-	const orphans = ours.filter((o) => !activeFlags.has(o.ip)).slice(0, maxChanges);
+	// A capped D1 result may miss active blocks: their list items would look like orphans and be
+	// deleted. Only remove orphans when the set of active blocks is known to be complete.
+	const flagsComplete = blockRows.length < maxFlags;
+	if (!flagsComplete) log("warn", "waf reconcile: active block flags hit the query cap; orphan removal skipped", { limit: maxFlags });
+	const orphans = flagsComplete ? ours.filter((o) => !activeFlags.has(o.ip)).slice(0, maxChanges) : [];
 	// With a truncated listing an IP may simply be on an unread page; re-adding is an idempotent upsert anyway.
 	// syncBlocksToWaf skips Cloudflare IPs.
 	const missing = [...activeFlags.entries()].filter(([ip]) => !inList.has(ip)).slice(0, maxChanges);

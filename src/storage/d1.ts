@@ -139,33 +139,47 @@ export async function recordPendingFlag(
 		.run();
 }
 
+/** A human-approved flag as stored, and the row it replaced (null for a new indicator). */
+export interface UpsertedFlag {
+	row: FlagRow;
+	previous: Pick<FlagRow, "action" | "status"> | null;
+}
+
 /**
  * Human-approved flag (manual or case decision): active immediately. When it replaces a
  * row from another source (say a trap flag that a case decision now covers), the old
  * provenance is kept in `reason` as "(previously trap <ray>: …)" instead of being lost.
+ *
+ * Also returns the previous action and status (read in the same `db.batch()` transaction,
+ * since RETURNING only sees new values), so callers can remove the WAF list item of an
+ * active block that this approval turned into a decoy.
  */
 export async function upsertActiveFlag(
 	db: D1Database,
 	f: { kind: FlagKind; value: string; action: FlagAction; reason: string; source: FlagSource; sourceRef: string | null; ttlDays: number },
-): Promise<FlagRow> {
+): Promise<UpsertedFlag> {
 	const now = nowSec();
 	const indicator = indicatorFor(f.kind, f.value);
-	const row = await db
-		.prepare(
-			`INSERT INTO flags (indicator, kind, action, status, reason, source, source_ref, created_at, updated_at, expires_at, hits)
-			 VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1)
-			 ON CONFLICT (indicator) DO UPDATE SET action = excluded.action, status = 'active',
-			   reason = substr(excluded.reason ||
-			     CASE WHEN flags.source <> excluded.source OR COALESCE(flags.source_ref, '') <> COALESCE(excluded.source_ref, '')
-			       THEN ' (previously ' || flags.source || COALESCE(' ' || flags.source_ref, '') || ': ' || COALESCE(flags.reason, '') || ')'
-			       ELSE '' END, 1, 500),
-			   source = excluded.source, source_ref = excluded.source_ref, updated_at = excluded.updated_at, expires_at = excluded.expires_at
-			 RETURNING *`,
-		)
-		.bind(indicator, f.kind, f.action, f.reason, f.source, f.sourceRef, now, now, now + f.ttlDays * DAY)
-		.first<FlagRow>();
+	const [before, after] = await db.batch<Record<string, unknown>>([
+		db.prepare(`SELECT action, status FROM flags WHERE indicator = ?`).bind(indicator),
+		db
+			.prepare(
+				`INSERT INTO flags (indicator, kind, action, status, reason, source, source_ref, created_at, updated_at, expires_at, hits)
+				 VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1)
+				 ON CONFLICT (indicator) DO UPDATE SET action = excluded.action, status = 'active',
+				   reason = substr(excluded.reason ||
+				     CASE WHEN flags.source <> excluded.source OR COALESCE(flags.source_ref, '') <> COALESCE(excluded.source_ref, '')
+				       THEN ' (previously ' || flags.source || COALESCE(' ' || flags.source_ref, '') || ': ' || COALESCE(flags.reason, '') || ')'
+				       ELSE '' END, 1, 500),
+				   source = excluded.source, source_ref = excluded.source_ref, updated_at = excluded.updated_at, expires_at = excluded.expires_at
+				 RETURNING *`,
+			)
+			.bind(indicator, f.kind, f.action, f.reason, f.source, f.sourceRef, now, now, now + f.ttlDays * DAY),
+	]);
+	const row = after?.results[0] as FlagRow | undefined;
 	if (!row) throw new Error(`flag ${indicator} not returned by upsert`);
-	return row;
+	const previous = (before?.results[0] as Pick<FlagRow, "action" | "status"> | undefined) ?? null;
+	return { row, previous };
 }
 
 export async function getFlag(db: D1Database, indicator: string): Promise<FlagRow | null> {
@@ -269,8 +283,11 @@ export async function deleteExpiredFlags(db: D1Database, indicators: string[], n
 
 export type BlockFlag = Pick<FlagRow, "indicator" | "kind" | "action" | "reason" | "source" | "source_ref">;
 
+/** Row cap of `activeBlockFlags`. A result this long may be incomplete. */
+export const ACTIVE_BLOCK_FLAGS_LIMIT = 10_000;
+
 /** Active, unexpired IP block flags: what the WAF list should contain (read-only, bounded). */
-export async function activeBlockFlags(db: D1Database, now: number, limit = 10_000): Promise<BlockFlag[]> {
+export async function activeBlockFlags(db: D1Database, now: number, limit = ACTIVE_BLOCK_FLAGS_LIMIT): Promise<BlockFlag[]> {
 	const { results } = await db
 		.prepare(
 			`SELECT indicator, kind, action, reason, source, source_ref FROM flags
@@ -385,9 +402,19 @@ export async function claimLead(db: D1Database, id: number): Promise<boolean> {
 	return (r.meta.changes ?? 0) === 1;
 }
 
-/** Undo `claimLead` after a failed start: back to `pending`, case link cleared. */
-export async function releaseLead(db: D1Database, id: number): Promise<void> {
-	await db.prepare(`UPDATE leads SET status = 'pending', case_id = NULL WHERE id = ? AND status = 'approved'`).bind(id).run();
+/**
+ * Undo `claimLead`: back to `pending`, case link cleared. Used after a failed start, and when
+ * an investigation errors. With `caseId`, only a lead still linked to that case (or to none)
+ * is released, so an error can't undo a newer approval. Returns true when the row changed.
+ */
+export async function releaseLead(db: D1Database, id: number, caseId?: string): Promise<boolean> {
+	const r = caseId
+		? await db
+				.prepare(`UPDATE leads SET status = 'pending', case_id = NULL WHERE id = ? AND status = 'approved' AND (case_id IS NULL OR case_id = ?)`)
+				.bind(id, caseId)
+				.run()
+		: await db.prepare(`UPDATE leads SET status = 'pending', case_id = NULL WHERE id = ? AND status = 'approved'`).bind(id).run();
+	return (r.meta.changes ?? 0) === 1;
 }
 
 /** Atomically dismiss a pending lead. Returns false if it was no longer pending. */
@@ -475,6 +502,38 @@ export async function claimCaseDecision(db: D1Database, id: string, actorId: str
 		.bind(actorId, nowSec(), id)
 		.run();
 	return (r.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Move a case to `to` only while it is in one of `from` (a conditional write, like every
+ * claim): the Workflow's own expiry and close never overwrite a human's concurrent claim.
+ * Returns the case's status after the call (`to` when this call changed it), or null if
+ * the case does not exist.
+ */
+export async function setCaseStatusIf(
+	db: D1Database,
+	id: string,
+	from: readonly CaseStatus[],
+	to: CaseStatus,
+	fields: Partial<Pick<CaseRow, "decision" | "decided_by">> = {},
+): Promise<{ changed: boolean; status: CaseStatus | null }> {
+	const sets = ["status = ?", "updated_at = ?"];
+	const values: (string | number | null)[] = [to, nowSec()];
+	if (fields.decision !== undefined) {
+		sets.push("decision = ?");
+		values.push(fields.decision);
+	}
+	if (fields.decided_by !== undefined) {
+		sets.push("decided_by = ?");
+		values.push(fields.decided_by);
+	}
+	const r = await db
+		.prepare(`UPDATE cases SET ${sets.join(", ")} WHERE id = ? AND status IN (${from.map(() => "?").join(",")})`)
+		.bind(...values, id, ...from)
+		.run();
+	if ((r.meta.changes ?? 0) === 1) return { changed: true, status: to };
+	const row = await db.prepare(`SELECT status FROM cases WHERE id = ?`).bind(id).first<{ status: CaseStatus }>();
+	return { changed: false, status: row?.status ?? null };
 }
 
 /** Undo `claimCaseDecision` when the decision event could not be delivered. */

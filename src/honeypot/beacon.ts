@@ -88,9 +88,8 @@ export async function handleBeacon(request: Request, env: Env, ctx: ExecutionCon
 		return NO_CONTENT();
 	}
 
-	// Per clone host: one popular clone can't turn every visitor into a D1 write.
-	if (!(await env.BEACON_LIMITER.limit({ key: `beacon:${host}` })).success) return NO_CONTENT();
-
+	// The token is checked BEFORE the per-host budget is charged: otherwise forged reports
+	// (no Origin header, any host name) could use up a real clone's budget and drop its beacons.
 	const token = typeof body.t === "string" ? body.t.trim() : "";
 	let rayId: string | null = null;
 	let tokenIp: string | null = null;
@@ -103,10 +102,16 @@ export async function handleBeacon(request: Request, env: Env, ctx: ExecutionCon
 	}
 
 	if (!rayId) {
-		// No valid token: never a lead (prevents trivial lead spam), only an analytics event.
-		writeEvent(env, "beacon_invalid", s, { index: host, foreignHost: host });
+		// No valid token: never a lead (prevents trivial lead spam), only an analytics event,
+		// bounded on its own key so invalid reports never touch a host's real budget.
+		if ((await env.BEACON_LIMITER.limit({ key: `beacon-invalid:${host}` })).success) {
+			writeEvent(env, "beacon_invalid", s, { index: host, foreignHost: host });
+		}
 		return NO_CONTENT();
 	}
+
+	// Per clone host: one popular clone can't turn every visitor into a D1 write.
+	if (!(await env.BEACON_LIMITER.limit({ key: `beacon:${host}` })).success) return NO_CONTENT();
 
 	// Per token: anyone can get a valid token by loading a page, so one token must not
 	// fan out to many invented hosts. A real clone reuses its token per host, and the

@@ -21,6 +21,17 @@ export interface ReportInput {
 	hosting: HostingSummary | null;
 }
 
+/**
+ * Untrusted text (the copy's URL, PTR names, AS organizations, registrars, User-Agents, DNS
+ * answers) as literal Markdown: no links, raw HTML, table cells or emphasis. report.md is
+ * served with a sandbox CSP, but a reviewer may paste it into a renderer that is not.
+ */
+export function escapeMd(value: unknown): string {
+	return String(value ?? "")
+		.replace(/[\r\n]+/g, " ")
+		.replace(/[\\`*_{}[\]()<>#+!|~]/g, "\\$&");
+}
+
 /** Shorten for a table cell without cutting a word in half. */
 export function shorten(value: string, max: number): string {
 	if (value.length <= max) return value;
@@ -79,6 +90,7 @@ export async function writeReport(env: Env, r: ReportInput): Promise<string> {
 			trap_link: r.decoded.trapLink,
 			token_candidates: r.decoded.candidates,
 			valid_tokens: r.decoded.tokens.length,
+			omitted_tokens: r.decoded.omittedTokens ?? 0,
 			beacon_only: r.decoded.beaconOnly === true,
 			live_mirror: attribution.some((a) => a.live_mirror),
 		},
@@ -120,10 +132,10 @@ export async function writeReport(env: Env, r: ReportInput): Promise<string> {
 	const md = [
 		`# Case ${r.caseId}`,
 		"",
-		`- **Suspected copy:** ${r.url}`,
+		`- **Suspected copy:** ${escapeMd(r.url)}`,
 		`- **Captured:** ${r.capture.fetchedAt} · HTTP ${r.capture.status} · ${r.capture.bytes} bytes${r.capture.truncated ? " (truncated: only the first 2 MiB were captured and hashed)" : ""}`,
 		`- **SHA-256 of capture:** \`${r.capture.sha256}\``,
-		`- **Markers:** ${r.decoded.beaconOnly ? 0 : r.decoded.tokens.length} valid token(s) of ${r.decoded.candidates} candidate(s) in the capture; beacon script ${r.decoded.beaconScript ? "present" : "absent"}; trap link ${r.decoded.trapLink ? "present" : "absent"}`,
+		`- **Markers:** ${r.decoded.beaconOnly ? 0 : r.decoded.tokens.length} valid token(s) of ${r.decoded.candidates} candidate(s) in the capture${r.decoded.omittedTokens ? ` (${r.decoded.omittedTokens} more valid token(s) not recorded: at most ${r.decoded.tokens.length} per case)` : ""}; beacon script ${r.decoded.beaconScript ? "present" : "absent"}; trap link ${r.decoded.trapLink ? "present" : "absent"}`,
 		`- **Evidence:** ${report.evidence_strength}`,
 		...(r.decoded.beaconOnly
 			? [
@@ -147,7 +159,7 @@ export async function writeReport(env: Env, r: ReportInput): Promise<string> {
 					"|---|---|---|---|---|---|---|",
 					...attribution.map(
 						(a) =>
-							`| ${a.fetched_at} | ${a.ip}${a.via_cloudflare ? " (Cloudflare IP)" : ""}${a.verified_bot ? " (verified bot: never flagged)" : ""}${a.source === "beacon" ? " (via beacon)" : ""} | ${a.asn} ${a.as_organization ?? ""} | ${a.country} / ${a.colo} | ${a.bot_score ?? "n/a"} | ${shorten((a.user_agent ?? "n/a").replace(/\|/g, "/"), 120)} | ${a.ray_id} |`,
+							`| ${a.fetched_at} | ${a.ip}${a.via_cloudflare ? " (Cloudflare IP)" : ""}${a.verified_bot ? " (verified bot: never flagged)" : ""}${a.source === "beacon" ? " (via beacon)" : ""} | ${a.asn} ${escapeMd(a.as_organization ?? "")} | ${escapeMd(a.country)} / ${escapeMd(a.colo)} | ${a.bot_score ?? "n/a"} | ${escapeMd(shorten(a.user_agent ?? "n/a", 120))} | ${a.ray_id} |`,
 					),
 				].join("\n"),
 		"",
@@ -156,12 +168,12 @@ export async function writeReport(env: Env, r: ReportInput): Promise<string> {
 		r.hosting === null
 			? "_Not checked (no valid token)._"
 			: [
-					`- Resolves to: ${r.hosting.ips.join(", ") || "?"}${r.hosting.error ? ` (lookup error: ${r.hosting.error})` : ""}`,
+					`- Resolves to: ${escapeMd(r.hosting.ips.join(", ")) || "?"}${r.hosting.error ? ` (lookup error: ${escapeMd(r.hosting.error)})` : ""}`,
 					`- ${report.cloudflare.guidance}`,
 					...(r.hosting.abuseDraftKey ? [`- Abuse report draft: \`${r.hosting.abuseDraftKey}\` (review before submitting; nothing was sent)`] : []),
 					...(r.hosting.abuseDraftSkipped ? [`- No abuse report draft: ${r.hosting.abuseDraftSkipped}`] : []),
 					...report.cloudflare.scrapers_on_cloudflare.map(
-						(s) => `- Scraper ${s.ip} is a Cloudflare IP${s.cf_worker_zone ? ` (CF-Worker: ${s.cf_worker_zone})` : ""}: never blocked; include it in an abuse report.`,
+						(s) => `- Scraper ${s.ip} is a Cloudflare IP${s.cf_worker_zone ? ` (CF-Worker: ${escapeMd(s.cf_worker_zone)})` : ""}: never blocked; include it in an abuse report.`,
 					),
 				].join("\n"),
 		"",
@@ -169,19 +181,19 @@ export async function writeReport(env: Env, r: ReportInput): Promise<string> {
 		"",
 		isSkipped(r.scan)
 			? `_Skipped: ${r.scan.skipped}_`
-			: `- Report: ${r.scan.reportUrl ?? r.scan.uuid}\n- Hosting: ${r.scan.pageIp ?? "?"} · AS${r.scan.pageAsn ?? "?"} · ${r.scan.pageCountry ?? "?"}\n- Malicious verdict: ${r.scan.verdictMalicious ?? "n/a"}`,
+			: `- Report: ${escapeMd(r.scan.reportUrl ?? r.scan.uuid)}\n- Hosting: ${escapeMd(r.scan.pageIp ?? "?")} · AS${escapeMd(r.scan.pageAsn ?? "?")} · ${escapeMd(r.scan.pageCountry ?? "?")}\n- Malicious verdict: ${r.scan.verdictMalicious ?? "n/a"}`,
 		"",
 		"## Threat Intel",
 		"",
 		isSkipped(r.intel)
 			? `_Skipped: ${r.intel.skipped}_`
 			: [
-					`- WHOIS domain: ${r.intel.whoisDomain ?? "not found"}`,
-					`- Registrar: ${r.intel.registrar ?? "?"} (abuse contact: ${r.intel.registrarAbuseEmail ?? "?"})`,
-					`- Domain created: ${r.intel.domainCreated ?? "?"}`,
-					`- Nameservers: ${r.intel.nameservers.join(", ") || "?"}`,
-					...r.intel.ips.map((i) => `- Scraper IP ${i.ip}: AS${i.asn ?? "?"} ${i.org ?? ""} (${i.type ?? "?"}), PTR ${i.ptr ?? "n/a"}`),
-					...(r.intel.errors.length ? [`- Lookup errors: ${r.intel.errors.join("; ")}`] : []),
+					`- WHOIS domain: ${escapeMd(r.intel.whoisDomain ?? "not found")}`,
+					`- Registrar: ${escapeMd(r.intel.registrar ?? "?")} (abuse contact: ${escapeMd(r.intel.registrarAbuseEmail ?? "?")})`,
+					`- Domain created: ${escapeMd(r.intel.domainCreated ?? "?")}`,
+					`- Nameservers: ${escapeMd(r.intel.nameservers.join(", ")) || "?"}`,
+					...r.intel.ips.map((i) => `- Scraper IP ${i.ip}: AS${i.asn ?? "?"} ${escapeMd(i.org ?? "")} (${escapeMd(i.type ?? "?")}), PTR ${escapeMd(i.ptr ?? "n/a")}`),
+					...(r.intel.errors.length ? [`- Lookup errors: ${escapeMd(r.intel.errors.join("; "))}`] : []),
 				].join("\n"),
 		"",
 		"## Next step (human decision required)",

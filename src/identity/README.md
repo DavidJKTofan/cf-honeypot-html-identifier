@@ -15,7 +15,7 @@ This folder turns a request into a sealed token, hides the token in HTML, and fi
 
 | Carrier | Default | Markup |
 |---|---|---|
-| `meta` | on | `<meta name="csrf-token" content="…">`, or `request-id` when the page already has a real CSRF meta tag |
+| `meta` | on | `<meta name="csrf-token" content="…">`, or `request-id` when the page already has a real CSRF meta tag. Goes before `</head>`; if the page omits `</head>` (valid HTML, common when minified), at the start of `<body>`, else at the end of the document |
 | `trap` | on | `<a href="/catalog/full-export" rel="nofollow" hidden aria-hidden tabindex=-1>` |
 | `beacon` | on | `<script src="https://<host>/assets/js/rum.js" defer>` |
 | `zw` | off | zero-width characters after the first text chunk of the first `<p>` |

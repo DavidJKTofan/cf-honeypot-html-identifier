@@ -25,7 +25,7 @@ export interface RecordedLead {
 	corroborated: boolean;
 }
 
-function leadNotice(lead: LeadRow, flags: Pick<LeadNotice, "reopened" | "corroborated"> = {}): LeadNotice {
+function leadNotice(lead: LeadRow, flags: Pick<LeadNotice, "reopened" | "corroborated" | "retryAfterCase"> = {}): LeadNotice {
 	return {
 		id: lead.id,
 		host: lead.host,
@@ -38,13 +38,32 @@ function leadNotice(lead: LeadRow, flags: Pick<LeadNotice, "reopened" | "corrobo
 	};
 }
 
-async function notifyLead(env: Env, cfg: Config, lead: LeadRow, reopened: boolean): Promise<void> {
-	const ref = await notifySafe(env, cfg, "lead", (n) => n.notifyLead(leadNotice(lead, { reopened })));
+/**
+ * Post a lead to the approval channel and remember the message. Also used by the
+ * InvestigateWorkflow to re-offer a lead whose investigation errored (`rateLimit: false`:
+ * that is a one-off per case, not public-traffic driven).
+ */
+export async function notifyLead(
+	env: Env,
+	cfg: Config,
+	lead: LeadRow,
+	reopened: boolean,
+	opts: { rateLimit?: boolean; retryAfterCase?: string } = {},
+): Promise<void> {
+	const notice = leadNotice(lead, { reopened, ...(opts.retryAfterCase ? { retryAfterCase: opts.retryAfterCase } : {}) });
+	const ref = await notifySafe(env, cfg, "lead", (n) => n.notifyLead(notice), { rateLimit: opts.rateLimit !== false });
 	if (ref) await setLeadNotifyRef(env.DB, lead.id, ref);
 }
 
+/**
+ * Not rate-limited: the token claim (`attachLeadToken`) already allows at most one
+ * corroboration per lead, and it is spent before this runs, so a skipped message here
+ * would be lost for good.
+ */
 async function notifyCorroborated(env: Env, cfg: Config, lead: LeadRow): Promise<void> {
-	const ref = await notifySafe(env, cfg, "lead-corroborated", (n) => updateOrPostLead(n, lead.notify_ref, leadNotice(lead, { corroborated: true })));
+	const ref = await notifySafe(env, cfg, "lead-corroborated", (n) => updateOrPostLead(n, lead.notify_ref, leadNotice(lead, { corroborated: true })), {
+		rateLimit: false,
+	});
 	if (ref && ref !== lead.notify_ref) await setLeadNotifyRef(env.DB, lead.id, ref);
 }
 

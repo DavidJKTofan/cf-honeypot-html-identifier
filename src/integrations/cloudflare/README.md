@@ -25,7 +25,7 @@ The token is used together with the **secrets** `ACCOUNT_ID` and `WAF_LIST_ID` (
 
 ## Cloudflare IP ranges
 
-`loadCloudflareRanges()` fetches <https://api.cloudflare.com/client/v4/ips> with [`cf.cacheTtl`](https://developers.cloudflare.com/workers/runtime-apis/request/) `= 86400` and falls back to `CLOUDFLARE_IPS_SNAPSHOT`. They are used to:
+`loadCloudflareRanges()` fetches <https://api.cloudflare.com/client/v4/ips> with [`cf.cacheTtl`](https://developers.cloudflare.com/workers/runtime-apis/request/) `= 86400` and **unions** the answer with `CLOUDFLARE_IPS_SNAPSHOT` (the snapshot alone if the fetch fails), so a partial answer can add ranges but never drop a protected one. They are used to:
 - **never flag Cloudflare IPs** (trap, manual flags, approvals, case decisions, WAF sync)
 - tell a reviewer when a *scraper* used Cloudflare infrastructure (a Cloudflare IP plus the [`CF-Worker`](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-worker) zone stored in Analytics Engine `blob20`)
 - detect copies **proxied by or hosted on Cloudflare**: `checkCloudflareHosting()` resolves A and AAAA records over [DoH](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/) (`cloudflare-dns.com`, no quota) and reports `onCloudflare` when every address is a Cloudflare address

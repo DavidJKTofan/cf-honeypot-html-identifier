@@ -26,6 +26,7 @@ export function badRequest(message: string): Response {
 	return json({ error: message }, { status: 400 });
 }
 
+/** Whole days, 1-365 (a fraction such as 0.5 rounds up to 1 day, never down to an instantly expired 0). */
 export function ttlFrom(value: unknown, fallback: number): number {
-	return typeof value === "number" && value > 0 ? Math.min(365, Math.floor(value)) : fallback;
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.max(1, Math.min(365, Math.floor(value))) : fallback;
 }

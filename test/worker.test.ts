@@ -1,5 +1,7 @@
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import worker from "../src/index";
 
 const BASE = "https://honeypot.automatic-demo.com";
 const ADMIN = { authorization: "Bearer test-admin-token" };
@@ -52,6 +54,23 @@ describe("page tokenization", () => {
 		const body = (await res.json()) as { valid: number; markers: { beaconScript: boolean; trapLink: boolean } };
 		expect(body.valid).toBe(1);
 		expect(body.markers).toMatchObject({ beaconScript: true, trapLink: true });
+	});
+
+	it("passes a 206 partial HTML response through untouched (no token in a byte range)", async () => {
+		const partial = "<!doctype html><html><head><title>t</title></head><bo";
+		const assets = {
+			fetch: async () => new Response(partial, { status: 206, headers: { "content-type": "text/html", "content-range": "bytes 0-52/400" } }),
+		} as unknown as Fetcher;
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(
+			new Request(`${BASE}/`, { headers: { "cf-connecting-ip": "198.51.100.24", range: "bytes=0-52" } }) as Request<unknown, IncomingRequestCfProperties>,
+			{ ...env, ASSETS: assets },
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(206);
+		expect(res.headers.get("content-range")).toBe("bytes 0-52/400");
+		expect(await res.text()).toBe(partial);
 	});
 
 	it("passes static assets through untouched", async () => {
@@ -174,6 +193,19 @@ describe("beacon", () => {
 		await scheduler.wait(100);
 		const row = await env.DB.prepare("SELECT 1 FROM leads WHERE host = ?").bind("forged.example").first();
 		expect(row).toBeNull();
+	});
+
+	it("forged invalid beacons can't use up a real clone host's budget", async () => {
+		const host = "budget-clone.example";
+		// More invalid reports for the host than BEACON_LIMITER allows per minute (10), no Origin header.
+		for (let i = 0; i < 12; i++) {
+			const res = await exports.default.fetch(`${BASE}/api/rum`, { method: "POST", body: JSON.stringify({ t: "y".repeat(91), u: `https://${host}/` }) });
+			expect(res.status).toBe(204);
+		}
+		const token = metaToken(await (await get("/", "198.51.100.31")).text());
+		await exports.default.fetch(`${BASE}/api/rum`, { method: "POST", body: JSON.stringify({ t: token, u: `https://${host}/page` }) });
+		const lead = await eventually(() => env.DB.prepare("SELECT * FROM leads WHERE host = ?").bind(host).first<{ token: string }>());
+		expect(lead.token).toBe(token);
 	});
 });
 

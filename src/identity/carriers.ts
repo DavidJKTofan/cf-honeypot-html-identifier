@@ -26,7 +26,10 @@ export function injectCarriers(response: Response, { token, cfg, origin }: Injec
 	const c = cfg.carriers;
 	const metaTag = (name: string) => `<meta name="${escapeAttr(name)}" content="${token}">`;
 	const meta = metaTag(cfg.metaName);
-	const state = { meta: !c.has("meta"), zw: !c.has("zw"), body: false, collision: false };
+	// `meta`: the tag is in the output. `headOpen`: a <head> start tag was seen, so the tag is due
+	// at its end tag. lol-html only calls onEndTag for a literal </head>, and HTML allows omitting it
+	// (minifiers do), so <body>, then the document end, insert the tag if </head> never came.
+	const state = { meta: !c.has("meta"), headOpen: false, zw: !c.has("zw"), body: false, collision: false };
 
 	const tail: string[] = [];
 	if (c.has("trap")) {
@@ -50,20 +53,23 @@ export function injectCarriers(response: Response, { token, cfg, origin }: Injec
 		});
 		rewriter.on("head", {
 			element(el) {
-				if (state.meta) return;
-				state.meta = true;
+				if (state.meta || state.headOpen) return;
+				state.headOpen = true;
 				el.onEndTag((end) => {
+					if (state.meta) return;
 					end.before(state.collision ? metaTag(META_FALLBACK_NAME) : meta, { html: true });
+					state.meta = true;
 				});
 			},
 		});
 	}
+	const pendingMeta = () => (state.collision ? metaTag(META_FALLBACK_NAME) : meta);
 	rewriter.on("body", {
 		element(el) {
 			if (state.body) return;
 			state.body = true;
 			if (!state.meta) {
-				el.prepend(meta, { html: true });
+				el.prepend(pendingMeta(), { html: true });
 				state.meta = true;
 			}
 			if (tail.length > 0) el.append(tail.join(""), { html: true });
@@ -106,7 +112,7 @@ export function injectCarriers(response: Response, { token, cfg, origin }: Injec
 	}
 	rewriter.onDocument({
 		end(end) {
-			if (!state.meta) end.append(meta, { html: true });
+			if (!state.meta) end.append(pendingMeta(), { html: true });
 		},
 	});
 
@@ -183,6 +189,9 @@ export async function scanHtml(
 	source: Response | string,
 	cfg: Pick<Config, "metaName" | "formField" | "beaconScriptPath" | "trapPath">,
 ): Promise<ScanResult> {
+	// Deliberately unbounded (the input is: captures keep 2 MiB): capping candidates in document
+	// order would let a clone hide the real token behind junk token-shaped values. The
+	// Workflow caps *valid* tokens instead (MAX_CASE_TOKENS), which cost a page load each.
 	const found = new Map<string, FoundToken>();
 	const result: ScanResult = { tokens: [], beaconScript: false, trapLink: false };
 	const add = (carrier: string, token: string) => {

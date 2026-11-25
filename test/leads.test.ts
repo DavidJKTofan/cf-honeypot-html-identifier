@@ -154,6 +154,16 @@ describe("a beacon corroborates a weaker lead", () => {
 		expect((await getLead(env.DB, first!.lead.id))?.notify_ref).toBe(`discord:${CHANNEL}:${MESSAGE}`);
 	});
 
+	it("still sends the corroboration when NOTIFY_LIMITER is exhausted (the claim is spent, so it can't retry)", async () => {
+		await recordLead(env, cfg, weak("limited.example", "referer"));
+		const d = discordEnv();
+		const limited = { ...d.env, NOTIFY_LIMITER: { limit: async () => ({ success: false }) } } as unknown as Env;
+		const r = await recordLead(limited, loadConfig(limited), beacon("limited.example", "203.0.113.26", "bebebebebebebebe"));
+		expect(r?.corroborated).toBe(true);
+		expect(d.calls).toHaveLength(1);
+		expect(d.calls[0]?.body).toContain("Corroborated clone lead: limited.example");
+	});
+
 	it("never escalates a beacon lead, even an older one stored without its token", async () => {
 		const d = discordEnv();
 		await recordLead(d.env, d.cfg, beacon("beacon-first.example", "203.0.113.22", "4d4d4d4d4d4d4d4d"));
@@ -227,7 +237,7 @@ describe("a beacon corroborates a weaker lead", () => {
 describe("flag provenance", () => {
 	it("a case decision on a trapped IP keeps the trap provenance in the reason", async () => {
 		await recordPendingFlag(env.DB, { kind: "ip", value: "203.0.113.200", reason: "trap hit (bot score 1)", sourceRef: "a5fbec741c46469a", pendingTtlDays: 14 });
-		const row = await upsertActiveFlag(env.DB, {
+		const { row, previous } = await upsertActiveFlag(env.DB, {
 			kind: "ip",
 			value: "203.0.113.200",
 			action: "decoy",
@@ -237,9 +247,10 @@ describe("flag provenance", () => {
 			ttlDays: 7,
 		});
 		expect(row).toMatchObject({ status: "active", source: "case", source_ref: "case-x" });
+		expect(previous).toEqual({ action: "decoy", status: "pending" });
 		expect(row.reason).toBe("case case-x: copy found on clone.example (previously trap a5fbec741c46469a: trap hit (bot score 1))");
 		// Re-applying the same decision does not stack another "previously".
-		const same = await upsertActiveFlag(env.DB, { kind: "ip", value: "203.0.113.200", action: "block", reason: "case case-x: again", source: "case", sourceRef: "case-x", ttlDays: 7 });
+		const { row: same } = await upsertActiveFlag(env.DB, { kind: "ip", value: "203.0.113.200", action: "block", reason: "case case-x: again", source: "case", sourceRef: "case-x", ttlDays: 7 });
 		expect(same.reason).toBe("case case-x: again");
 		expect((await getFlag(env.DB, "ip:203.0.113.200"))?.action).toBe("block");
 	});

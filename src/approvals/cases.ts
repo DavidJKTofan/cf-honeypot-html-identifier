@@ -100,7 +100,8 @@ export function parseDecision(body: unknown): Decision | null {
 	const b = body as Record<string, unknown>;
 	if (b.action !== "decoy" && b.action !== "block" && b.action !== "none") return null;
 	const decision: Decision = { action: b.action };
-	if (typeof b.ttlDays === "number" && b.ttlDays > 0 && b.ttlDays <= 365) decision.ttlDays = Math.floor(b.ttlDays);
+	// Whole days, at least 1: Math.floor(0.5) would be an instantly expired flag.
+	if (typeof b.ttlDays === "number" && b.ttlDays > 0 && b.ttlDays <= 365) decision.ttlDays = Math.max(1, Math.floor(b.ttlDays));
 	if (Array.isArray(b.ips)) decision.ips = b.ips.filter((x): x is string => typeof x === "string").slice(0, 100);
 	if (typeof b.note === "string") decision.note = b.note.slice(0, 500);
 	return decision;

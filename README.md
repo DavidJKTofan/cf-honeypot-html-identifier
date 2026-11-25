@@ -334,7 +334,7 @@ Availability and limits depend on your plan. Check [Cloudflare plans](https://ww
 
   | Binding | Key | Limit | Guards |
   |---|---|---|---|
-  | `BEACON_LIMITER` | clone host, and token Ray ID | 10 / min each | lead upserts from one clone, and one token fanning out to invented hosts |
+  | `BEACON_LIMITER` | clone host, and token Ray ID (valid tokens); clone host for invalid reports, on a separate key | 10 / min each | lead upserts from one clone, one token fanning out to invented hosts, and forged reports draining a real clone's budget |
   | `LEAD_LIMITER` | global | 30 / min | all beacon lead upserts |
   | `TRAP_LIMITER` | IP | 2 / min | pending-flag upserts from one IP |
   | `TRAP_GLOBAL_LIMITER` | global | 30 / min | pending-flag upserts from a crawl spread over many proxy IPs |

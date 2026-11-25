@@ -72,7 +72,8 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	}
 
 	response ??= await upstream(request, env);
-	if (!isHtmlResponse(response)) return response;
+	// 206: a byte range of the page. Rewriting it would corrupt the range (and mint a token nobody sees).
+	if (!isHtmlResponse(response) || response.status === 206) return response;
 
 	const token = await sealToken(s, await importTokenKey(env.TOKEN_KEY));
 	writeEvent(env, "page", s);

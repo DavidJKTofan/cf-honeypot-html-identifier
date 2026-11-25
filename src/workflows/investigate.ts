@@ -16,7 +16,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { decodeTokens, fetchPage, type DecodedToken } from "../admin/decode";
 import { DECISION_EVENT, type Decision, type InvestigateParams } from "../approvals/cases";
-import { recordApprovedFlag, syncBlocksToWaf } from "../approvals/enforce";
+import { downgradedBlockIp, recordApprovedFlag, removeBlocksFromWaf, syncBlocksToWaf } from "../approvals/enforce";
+import { notifyLead } from "../approvals/leads";
 import { loadConfig } from "../core/config";
 import { errorMessage, log } from "../core/util";
 import { scanHtml } from "../identity/carriers";
@@ -26,8 +27,8 @@ import { cfApi } from "../integrations/cloudflare/api";
 import { checkCloudflareHosting, isCloudflareIp, loadCloudflareRanges } from "../integrations/cloudflare/ip-ranges";
 import { notifySafe } from "../notify";
 import { lookupRay, type RayEnrichment } from "../storage/analytics";
-import { getCase, getLead, insertCaseTokens, updateCase, type FlagRow } from "../storage/d1";
-import { decisionTargets, isLiveMirror, needsIngestionWait, secondsBeforeCapture } from "./evidence";
+import { getCase, getLead, insertCaseTokens, releaseLead, setCaseStatusIf, updateCase, type FlagRow, type LeadRow } from "../storage/d1";
+import { capCaseTokens, decisionTargets, isLiveMirror, needsIngestionWait, secondsBeforeCapture } from "./evidence";
 import { abuseReportKey, attributionRows, caseKey, writeReport } from "./report";
 import {
 	get,
@@ -91,20 +92,30 @@ export class InvestigateWorkflow extends WorkflowEntrypoint<Env, InvestigatePara
 							source,
 							secondsBeforeCapture: secondsBeforeCapture(t.fingerprint.issuedAt, capture.fetchedAt),
 						}));
-				const tokens = evidence(await decodeTokens(env, scan.tokens, { enrich: false }), "capture");
+				// Bounded: a page stuffed with genuine tokens can't push this step past its 1 MiB result.
+				const capped = capCaseTokens(evidence(await decodeTokens(env, scan.tokens, { enrich: false }), "capture"));
+				const tokens = [...capped.kept];
 				// The capture found nothing, but a visitor's browser reported a valid token from this
 				// host (the lead's beacon token): the copy may cloak the investigator (CF-Worker header,
 				// Cloudflare ASN) or encode the token. Use it as UNCONFIRMED evidence, labelled as such.
+				// Only for the lead's own host: the token says nothing about any other site.
 				let beaconOnly = false;
 				if (tokens.length === 0 && leadId !== null) {
 					const lead = await getLead(env.DB, leadId);
-					if (lead?.token) {
+					if (lead?.token && lead.host === host) {
 						const reported = evidence(await decodeTokens(env, [{ carrier: "beacon", token: lead.token }], { enrich: false }), "beacon");
 						tokens.push(...reported);
 						beaconOnly = reported.length > 0;
 					}
 				}
-				return { beaconScript: scan.beaconScript, trapLink: scan.trapLink, candidates: scan.tokens.length, tokens, beaconOnly };
+				return {
+					beaconScript: scan.beaconScript,
+					trapLink: scan.trapLink,
+					candidates: scan.tokens.length,
+					tokens,
+					beaconOnly,
+					...(capped.omitted > 0 ? { omittedTokens: capped.omitted } : {}),
+				};
 			});
 
 			// A live reverse proxy mints its token during our own capture; its Analytics Engine row
@@ -336,15 +347,29 @@ export class InvestigateWorkflow extends WorkflowEntrypoint<Env, InvestigatePara
 				const ev = await step.waitForEvent<Decision>("wait for human decision", { type: DECISION_EVENT, timeout: "7 days" });
 				decision = ev.payload;
 			} catch {
-				await step.do("expire undecided case", async () => {
-					await updateCase(env.DB, caseId, { status: "expired" });
-				});
-				return { caseId, status: "expired" };
+				// Conditional, like every claim: a click that lands as the wait times out may already
+				// have claimed the case (`applying`) and sent its event to this instance.
+				const expiry = await step.do("expire undecided case", async () => setCaseStatusIf(env.DB, caseId, ["awaiting_decision"], "expired"));
+				if (expiry.changed || expiry.status !== "applying") return { caseId, status: expiry.status ?? "expired" };
+				// That late decision was claimed and told "delivered". Its event is buffered for this
+				// instance, so pick it up here and apply it instead of overwriting the case as expired.
+				try {
+					const late = await step.waitForEvent<Decision>("wait for late decision", { type: DECISION_EVENT, timeout: "10 minutes" });
+					decision = late.payload;
+				} catch {
+					// The claim never produced an event (its sendEvent failed and the claim was released).
+					const end = await step.do("expire after late claim", async () => setCaseStatusIf(env.DB, caseId, ["awaiting_decision", "applying"], "expired"));
+					return { caseId, status: end.status ?? "expired" };
+				}
 			}
 
 			// D1 flags first (idempotent upserts), then ONE WAF list write for every block in its own
 			// step: one bulk operation per decision instead of one per IP, so writes never collide.
-			const { applied: decided, rows } = await step.do("apply human decision", async (): Promise<{ applied: AppliedDecision; rows: FlagRow[] }> => {
+			const {
+				applied: decided,
+				rows,
+				downgraded,
+			} = await step.do("apply human decision", async (): Promise<{ applied: AppliedDecision; rows: FlagRow[]; downgraded: string[] }> => {
 				const ttlDays = decision.ttlDays ?? cfg.flagTtlDays;
 				const ranges = await loadCloudflareRanges();
 				const targets = decisionTargets(decoded.tokens, decision.ips, ranges);
@@ -358,10 +383,12 @@ export class InvestigateWorkflow extends WorkflowEntrypoint<Env, InvestigatePara
 					note: decision.note ?? null,
 					actor: decision.actor ?? null,
 				};
-				if (decision.action === "none") return { applied: result, rows: [] };
+				if (decision.action === "none") return { applied: result, rows: [], downgraded: [] };
 				const flagRows: FlagRow[] = [];
+				// Active blocks this decision turns into decoys: their WAF list items must go too.
+				const downgradedIps: string[] = [];
 				for (const ip of targets.act) {
-					const row = await recordApprovedFlag(
+					const approved = await recordApprovedFlag(
 						env,
 						{
 							kind: "ip",
@@ -374,10 +401,12 @@ export class InvestigateWorkflow extends WorkflowEntrypoint<Env, InvestigatePara
 						},
 						ranges,
 					);
-					flagRows.push(row);
-					result.indicators.push(row.indicator);
+					flagRows.push(approved.row);
+					result.indicators.push(approved.row.indicator);
+					const downgradedIp = downgradedBlockIp(approved);
+					if (downgradedIp) downgradedIps.push(downgradedIp);
 				}
-				return { applied: result, rows: flagRows };
+				return { applied: result, rows: flagRows, downgraded: downgradedIps };
 			});
 
 			let waf: string = "not_applicable";
@@ -392,20 +421,60 @@ export class InvestigateWorkflow extends WorkflowEntrypoint<Env, InvestigatePara
 						log("error", "case: waf list sync failed", { caseId, error: errorMessage(err) });
 						return "error";
 					});
+			} else if (decided.action === "decoy" && downgraded.length > 0) {
+				// A decoy for an IP that was blocked: without this, the edge keeps blocking it (the list
+				// rule runs before the Worker) and the decoy never shows. Reconcile is the daily backstop.
+				waf = await step
+					.do("remove downgraded blocks from WAF list", { retries: { limit: 3, delay: "20 seconds", backoff: "exponential" }, timeout: "5 minutes" }, async () =>
+						removeBlocksFromWaf(env, cfg, downgraded, { throwOnError: true, pollBudgetMs: 60_000, retryBudgetMs: 60_000 }),
+					)
+					.catch((err: unknown) => {
+						log("error", "case: waf list removal failed", { caseId, error: errorMessage(err) });
+						return "error";
+					});
 			}
 			const applied: AppliedDecision = { ...decided, waf: [waf] };
 
 			await step.do("close case", async () => {
 				const body = JSON.stringify({ decidedAt: new Date().toISOString(), decision, applied }, null, 2);
 				await env.EVIDENCE.put(caseKey(caseId, "decision.json"), body, { httpMetadata: { contentType: "application/json" } });
-				await updateCase(env.DB, caseId, { status: "closed", decision: JSON.stringify(applied), decided_by: applied.actor });
+				// Conditional: never overwrite a status this Workflow did not expect. `awaiting_decision`
+				// covers an event sent without a claim (for example the Workflows REST API).
+				const r = await setCaseStatusIf(env.DB, caseId, ["applying", "awaiting_decision"], "closed", {
+					decision: JSON.stringify(applied),
+					decided_by: applied.actor,
+				});
+				if (!r.changed) log("warn", "case: close skipped, unexpected status", { caseId, status: r.status });
 			});
 			return { caseId, status: "closed", applied };
 		} catch (err) {
 			await step.do("mark case errored", async () => {
 				await updateCase(env.DB, caseId, { status: "errored" });
 			});
+			if (leadId !== null) await this.reofferLead(step, caseId, leadId);
 			throw err;
+		}
+	}
+
+	/**
+	 * An errored investigation must not strand its lead as `approved` (no buttons, no way to
+	 * approve it again): put it back to `pending` and offer it again. Best-effort: never masks
+	 * the original error.
+	 */
+	private async reofferLead(step: WorkflowStep, caseId: string, leadId: number): Promise<void> {
+		const env = this.env;
+		try {
+			const lead = await step.do("release lead after error", async (): Promise<LeadRow | null> => {
+				if (!(await releaseLead(env.DB, leadId, caseId))) return null;
+				return getLead(env.DB, leadId);
+			});
+			if (!lead) return;
+			await step.do("offer lead again after error", async () => {
+				// A one-off per errored case, not public-traffic driven: not rate-limited.
+				await notifyLead(env, loadConfig(env), lead, false, { rateLimit: false, retryAfterCase: caseId });
+			});
+		} catch (err) {
+			log("error", "case: could not release the lead after an error", { caseId, leadId, error: errorMessage(err) });
 		}
 	}
 }

@@ -27,6 +27,26 @@ export function needsIngestionWait(tokens: Pick<TokenEvidence, "secondsBeforeCap
 	return tokens.some((t) => t.secondsBeforeCapture <= INGESTION_WAIT_WINDOW_SEC);
 }
 
+/**
+ * Valid tokens one case records. A real copy carries one token (repeated across carriers) or a
+ * handful; a page stuffed with thousands of genuine tokens must not make the investigation fail
+ * (a step result is capped at 1 MiB) or turn one decision into thousands of flags.
+ */
+export const MAX_CASE_TOKENS = 50;
+/** Of MAX_CASE_TOKENS, how many of the NEWEST are kept: a live proxy's token is minted by the capture itself. */
+const NEWEST_KEPT = 5;
+
+/**
+ * Keep at most `max` tokens: the earliest fetches (the original scrape predates any padding,
+ * and issuedAt can't be forged) plus the newest few (a live reverse proxy's own fetch).
+ */
+export function capCaseTokens<T extends Pick<TokenEvidence, "fingerprint">>(tokens: T[], max = MAX_CASE_TOKENS): { kept: T[]; omitted: number } {
+	if (tokens.length <= max) return { kept: tokens, omitted: 0 };
+	const sorted = [...tokens].sort((a, b) => a.fingerprint.issuedAt - b.fingerprint.issuedAt);
+	const newest = Math.min(NEWEST_KEPT, max);
+	return { kept: [...sorted.slice(0, max - newest), ...sorted.slice(sorted.length - newest)], omitted: tokens.length - max };
+}
+
 export interface DecisionTargets {
 	/** IPs the decision may flag. */
 	act: string[];
