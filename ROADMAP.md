@@ -31,7 +31,7 @@ The review checked the code against the [Workers best practices](https://develop
 | M8 | AES-GCM key volume, and only one previous key for decoding | ⬜ |
 | M9 | Workflow steps weren't idempotent | ✅ |
 | L1–L19 | D1, Workflow, privacy, robots.txt, tooling and docs hardening | see below |
-| R1–R2 | IDs in tracked files and in git history | ⬜ |
+| R1–R2 | IDs in tracked files and in git history | ✅ |
 
 ### High
 
@@ -105,9 +105,9 @@ Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/m
 
 ### Repository hygiene
 
-**R1. `old_files/` is tracked.** ⬜ It holds an older `wrangler.jsonc` with a D1 `database_id`, although AGENTS.md says to keep it untracked. **Fix:** `git rm -r --cached old_files`, then add `old_files/` to `.gitignore`.
+**R1. `old_files/` was tracked.** ✅ The legacy prototype (with an older D1 `database_id`) was removed from the repository.
 
-**R2. Real IDs in git history.** ⬜ Commits `aeb82cf`, `8cdae06` and `7358521` (v0 to v0.2) on the public `main` contain the real `account_id`, D1 `database_id` and `WAF_LIST_ID` in `wrangler.jsonc`. These are [identifiers, not credentials](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/): every API call still needs a token. Rewriting history is optional and the owner's call. If wanted: [`git filter-repo`](https://github.com/newren/git-filter-repo), then a force-push, and every clone must re-clone.
+**R2. Real IDs in git history.** ✅ Early commits contained the real `account_id`, D1 `database_id` and `WAF_LIST_ID` in `wrangler.jsonc`. These are [identifiers, not credentials](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/), but the history was squashed into a single commit before the repository went public. A pre-publication audit also replaced a real (production-key) token in the OpenAPI example with a test-key one and stripped editor metadata from `public/favicon.png`.
 
 ## Live test findings and scraper bypasses (2026-11-25)
 
@@ -206,7 +206,7 @@ It touches every enforcement path, so it needs its own change with tests for eac
 ### Fixed during review
 - **Hotlink false positives.** Link clicks from other sites (navigations) used to count as clone signals. Now only subresource loads count ([`Sec-Fetch-Dest`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Dest)).
 - **CSRF meta collision.** Pages that already use `<meta name="csrf-token">` (Rails, Laravel) could have had their real token shadowed. The identifier now falls back to `<meta name="request-id">`. The `form` carrier now does the same for `_csrf` fields (M4).
-- **Account-specific IDs in the repo.** Moved to [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/) and `.env` (see AGENTS.md, "Public-repo hygiene"). Older commits still contain them (R2).
+- **Account-specific IDs in the repo.** Moved to [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/) and `.env` (see AGENTS.md, "Public-repo hygiene"). The git history was squashed before publishing (R2).
 - **The code review above:** H1, H3, M1–M6, M9 and most low items.
 
 ### Review carefully before going live

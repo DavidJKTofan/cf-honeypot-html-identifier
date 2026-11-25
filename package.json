@@ -2,6 +2,7 @@
 	"name": "cf-honeypot-html-identifier",
 	"version": "0.1.0",
 	"private": true,
+	"license": "MIT",
 	"description": "Educational MVP: Cloudflare Worker that embeds a sealed, hidden identifier in HTML to attribute scraped copies, discover clones and build approval-gated evidence.",
 	"type": "module",
 	"scripts": {

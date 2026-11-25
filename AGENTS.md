@@ -56,7 +56,7 @@ Dependencies point inward: `admin`, `notify`, `workflows` → `approvals` → `s
 - **Runtime IDs are Worker secrets:** `ACCOUNT_ID`, `WAF_LIST_ID`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `DISCORD_APPLICATION_ID`, `DISCORD_PUBLIC_KEY`, `DISCORD_CHANNEL_ID`, `DISCORD_APPROVER_IDS`, `DISCORD_APPROVER_ROLE_IDS`, plus the real credentials. They're typed as optional in `src/env.d.ts`, with placeholders in `.dev.vars.example`, and uploaded with `wrangler deploy --secrets-file .dev.vars` (which uploads **everything** in that file).
 - **CLI-only credentials go in `.env`**, never `.dev.vars`: the Access service token (`HP_ACCESS_CLIENT_ID`, `HP_ACCESS_CLIENT_SECRET`) must not become a Worker secret.
 - **A name can't be both a var and a secret.** Never add these back to `vars`.
-- **Before committing,** grep for account, zone, list and Discord IDs. `old_files/` contains an older D1 ID and is still tracked in git (since v0); untrack it (`git rm -r --cached old_files` and add it to `.gitignore`). Commits v0–v0.2 also contain the real account, D1 and WAF list IDs in `wrangler.jsonc` (see ROADMAP, "Repo hygiene").
+- **Before committing,** grep for account, zone, list and Discord IDs, real tokens (91-character strings sealed with the production key), and image metadata (strip XMP/EXIF from PNGs). Screenshots follow the redaction rules in `demo/screenshots/README.md`. The history was squashed before the repo went public, so no older commit holds these IDs.
 
 ## Invariants (do not break)
 

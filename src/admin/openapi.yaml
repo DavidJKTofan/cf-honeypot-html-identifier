@@ -24,8 +24,8 @@ info:
 
     See `src/admin/README.md` for setup, and `scripts/hp.mjs` (`npm run hp -- <command>`) for a CLI.
   license:
-    name: See repository
-    url: https://github.com/DavidJKTofan/cf-honeypot-html-identifier
+    name: MIT
+    url: https://github.com/DavidJKTofan/cf-honeypot-html-identifier/blob/main/LICENSE
 servers:
   - url: https://{host}{prefix}
     description: A canonical host of the deployment

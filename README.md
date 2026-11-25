@@ -13,9 +13,9 @@ Live demo: `https://honeypot.automatic-demo.com` (fictional site). **Presenting 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DavidJKTofan/cf-honeypot-html-identifier)
 
 > [!IMPORTANT]
-> **Disclaimer.** This is an educational, defensive example of how such a system *could* look at a high level, not a production product, and not an official Cloudflare product. It is provided as-is, without warranty. You are responsible for how you use it: IP addresses, User-Agents and similar signals are personal data in many jurisdictions (for example under GDPR), so make sure you have a legal basis, a privacy notice and a retention policy before deploying it. An identifier shows who *fetched* a page, not who *published* a copy. Treat every result as a lead for human review. Nothing here is legal advice, and it does not replace [Bot Management](https://developers.cloudflare.com/bots/plans/bm-subscription/), [WAF](https://developers.cloudflare.com/waf/) or [AI Crawl Control](https://developers.cloudflare.com/ai-crawl-control/) (see [Defense in depth](#defense-in-depth-do-this-first)).
+> **Disclaimer.** This is an educational, defensive example of how such a system *could* look at a high level, not a production product, and not an official Cloudflare product. It is provided as-is, without warranty of any kind, under the [MIT License](LICENSE): the authors accept no liability for any use of it. You are responsible for how you use it: IP addresses, User-Agents and similar signals are personal data in many jurisdictions (for example under GDPR), so make sure you have a legal basis, a privacy notice and a retention policy before deploying it. An identifier shows who *fetched* a page, not who *published* a copy. Treat every result as a lead for human review. Nothing here is legal advice, and it does not replace [Bot Management](https://developers.cloudflare.com/bots/plans/bm-subscription/), [WAF](https://developers.cloudflare.com/waf/) or [AI Crawl Control](https://developers.cloudflare.com/ai-crawl-control/) (see [Defense in depth](#defense-in-depth-do-this-first)).
 
-**Contents:** [How it works](#how-it-works) · [Found a copy?](#found-a-copy-validating-the-identifier) · [Cloudflare products used](#cloudflare-products-used) · [Quick start](#quick-start) · [Admin API and CLI](#admin-api-and-cli) · [Configuration](#configuration-vars) · [Defense in depth](#defense-in-depth-do-this-first) · [Limitations](#limitations) · [Roadmap](#roadmap) · [Demo guide](DEMO.md)
+**Contents:** [How it works](#how-it-works) · [Found a copy?](#found-a-copy-validating-the-identifier) · [Cloudflare products used](#cloudflare-products-used) · [Quick start](#quick-start) · [Admin API and CLI](#admin-api-and-cli) · [Configuration](#configuration-vars) · [Defense in depth](#defense-in-depth-do-this-first) · [Limitations](#limitations) · [Roadmap](#roadmap) · [Demo guide](DEMO.md) · [License](#license)
 
 ## How it works
 
@@ -588,3 +588,7 @@ A live end-to-end test (2026-11-25) cloned the demo onto another zone with a sta
 [ROADMAP.md](ROADMAP.md) has a **production-readiness review**: what to check before running this at scale, covering shared IPs, privacy and retention, caching, key management and admin access. It also lists future development ideas, from risk-scored enforcement and audit logs to more notifier channels and paraphrase detection.
 
 See [AGENTS.md](AGENTS.md) for architecture, data sources and Cloudflare documentation references.
+
+## License
+
+[MIT](LICENSE). The software is provided "as is", without warranty of any kind, and the authors and copyright holders are not liable for any claim, damages or other liability arising from it or from its use. You use, deploy and adapt it at your own risk and are solely responsible for how you do so, including legal compliance (see the [disclaimer](#cf-honeypot-html-identifier) at the top).
