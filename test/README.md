@@ -17,7 +17,7 @@ The tests run inside `workerd` through [`@cloudflare/vitest-plugin`](https://dev
 | `hotlink.test.ts` | Foreign-Referer hotlink events: navigations ignored, subresources counted, benign hosts ignored, visitor data scrubbed |
 | `approvals.test.ts` | Concurrency-safe approvals: concurrent lead approvals start one Workflow, a failed start rolls back, one open case per host (partial unique index), concurrent case decisions deliver one event, an abuse report is submitted once, D1 batch helpers |
 | `robots.test.ts` | The trap `Disallow` reaches every crawler group (own groups, multi-agent groups, comments, CRLF, missing `*` group, empty file) |
-| `abuse.test.ts` | Beacon bounds (Origin check, per-token and global lead limits), visitor-data scrubbing, trap global limit, form-carrier fallback, capture truncation |
+| `abuse.test.ts` | Beacon bounds (Origin check, per-token and global lead limits), visitor-data scrubbing, trap global limit, form-carrier fallback, capture truncation, error-page previews (`describeErrorPage`) |
 | `worker.test.ts` | End to end: tokenized pages, decode, static assets, robots.txt, the approval-gated trap and decoy, block fallback, Cloudflare IP protection, beacon leads, admin 404 |
 
 ## Usage

@@ -43,6 +43,28 @@ Case **Decoy** and **Block** create active flags for every scraper IP in the cas
 
 When a case decision (or a manual flag) replaces a flag from another source, for example a trap flag for the same IP, the old provenance is kept at the end of `reason`: `case …: copy found on … (previously trap <ray>: trap hit …)`.
 
+## Lead sources
+
+A lead is a foreign host that *might* run a copy of the site. Its `source` (the **Source** field in Discord, `source` in `npm run hp -- leads` and `GET /leads`) names the discovery channel that saw the host **first**, and so how much the lead proves on its own. Leads are deduplicated by host: a later signal from another channel only adds hits (a beacon also attaches its token), and `source` keeps its first value.
+
+| `source` | Created by | What it means | Strength on its own | `hits` counts |
+|---|---|---|---|---|
+| `beacon` | `POST <BEACON_PATH>` ([honeypot](../honeypot/README.md)), as it happens | Our `rum.js` ran on a page on this host and reported a token that opens with our key. The lead keeps that token and the scraper IP inside it | **Strong.** A page on that host carried one of our tokens. Still unconfirmed until the capture finds it: anyone can load our page and post its token with an invented page URL (the `Origin` check stops browsers, not scripts) | beacon reports (bounded per host, per token and globally) |
+| `referer` | Daily [`MaintenanceWorkflow`](../workflows/README.md#maintenanceworkflow-steps), from the last 2 days of Analytics Engine `hotlink` events (top 50 hosts) | Pages on this host load our images, scripts or stylesheets: a foreign `Referer` on a subresource load (link clicks don't count). Canonical hosts, `REFERER_IGNORE` and the built-in benign proxies are left out | **Medium.** Clones often hotlink assets, but so do partners, aggregators and blogs that embed one image | daily runs that saw the host |
+| `brand_protection` | Daily `MaintenanceWorkflow`, from your [Brand Protection](https://developers.cloudflare.com/security-center/brand-protection/) string and logo queries (matches first seen in the last 2 days, at most 25 per run; needs `CF_API_TOKEN`) | Brand Protection matched the host against one of your queries: a recently seen domain whose name resembles a query string (typosquat, look-alike), or a page showing one of your logos | **Weak.** A match is about the name or the logo, not the HTML. Many are unrelated sites, parked domains or someone with a similar name. The lead doesn't record which query or logo matched; the Brand Protection dashboard does | daily runs that still saw the match as recent (usually 2 at most) |
+| `manual` | Nothing today (reserved in the schema) | A URL you found yourself goes straight to a case with `npm run hp -- case <url>`, without a lead | n/a | n/a |
+
+### Triaging a lead
+
+**Investigate** is cheap and safe for every source. It captures one page and decodes it; URL Scanner and Threat Intel run only after a valid token is found, and a page without our token closes as `no_evidence` (the snapshot stays in R2). For a weak lead, a quick check first avoids an empty case:
+
+1. Run `npm run hp -- decode <sample URL>`. It decodes the live page without storing anything or using quota. Like the capture, the fetch comes from your Worker and carries `CF-Worker: <your zone>`.
+2. Decide:
+   - **Error status** (`fetched.status` isn't 2xx and `fetched.error` is set; for example `530` with `cloudflareError: "1016"`, so no live site is behind the host): nothing was checked. Don't investigate yet, because the capture would get the same error page and close as `no_evidence`. Leave the lead pending, or dismiss it to clear the queue. Both are deleted 14 days after they were last seen, and after that a new signal creates a fresh lead and notifies again.
+   - **Valid token:** click **Investigate**.
+   - **No token, and the page is unrelated:** click **Dismiss**.
+   - **No token, but the page plainly copies yours** (tokens stripped, or a re-skin): **Investigate** anyway to keep a dated snapshot. Without a token there is no attribution, so take it up with the host or registrar yourself.
+
 ## Re-scraped hosts
 
 A lead is deduplicated by host. Once its host has been investigated (`approved`), further beacons only add hits, unless a beacon's token names a **different scraper IP**: the scraper refreshed the copy from somewhere else. Then `recordLead` re-opens the lead (`approved` → `pending`, with the new token as evidence) and notifies again ("Re-scraped clone"). The re-open is an atomic conditional `UPDATE` like every other claim, and it is refused when:

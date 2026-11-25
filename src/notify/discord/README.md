@@ -104,6 +104,8 @@ The digest buttons act on **one IP** and name it; the case buttons below act on 
 
 ### Clone lead (first sight of a foreign host)
 
+The message opens with what its **Source** means: `beacon` (a page on that host reported one of our tokens), `referer` (it loads our assets) or `brand_protection` (its name or a logo matched one of your [Brand Protection](https://developers.cloudflare.com/security-center/brand-protection/) queries; a look-alike, not proof of a copy). [Lead sources](../../approvals/README.md#lead-sources) explains each one and how to triage it.
+
 | Button | What happens |
 |---|---|
 | **Investigate** | The lead becomes *approved* and **one** `InvestigateWorkflow` starts:<ul><li>captures the page and its SHA-256</li><li>decodes the hidden tokens</li><li>checks whether the copy is on Cloudflare</li><li>if a valid token is found, runs URL Scanner and Threat Intel</li><li>writes a report</li></ul>**Nothing is enforced.** It's refused (*Not applied*) if this host already has an open case. The result arrives later as a *Case awaiting decision* message. |

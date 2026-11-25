@@ -1,13 +1,13 @@
 /**
  * Abuse bounds on the public endpoints: beacon lead spam (per host, per token,
- * global, Origin check), the trap's global pending-flag budget, beacon privacy
- * and capture truncation. Rate limiters are replaced by deterministic fakes
+ * global, Origin check), the trap's global pending-flag budget, beacon privacy,
+ * capture truncation and error-page previews. Rate limiters are replaced by deterministic fakes
  * (Miniflare's local limiter uses wall-clock windows, which makes counts flaky).
  */
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { fetchPage } from "../src/admin/decode";
+import { describeErrorPage, fetchPage } from "../src/admin/decode";
 import { loadConfig } from "../src/core/config";
 import { sha256Hex } from "../src/core/util";
 import { handleBeacon } from "../src/honeypot/beacon";
@@ -172,5 +172,39 @@ describe("evidence capture size cap", () => {
 		const page = await fetchPage("https://exact.example/", 2000, async () => streamed([1000, 1000], () => undefined));
 		expect(page.truncated).toBe(false);
 		expect(page.bytes.byteLength).toBe(2000);
+	});
+});
+
+describe("error pages in a capture", () => {
+	const page = (status: number, body: string, headers: Record<string, string> = {}) =>
+		fetchPage("https://gone.example/", undefined, async () => new Response(body, { status, headers }));
+
+	it("names a Cloudflare 1xxx error from the plain-text body (HTTP 530, error code: 1016)", async () => {
+		const p = await page(530, "error code: 1016\n");
+		expect(describeErrorPage(p)).toEqual({ cloudflareError: "1016", preview: "error code: 1016" });
+	});
+
+	it("prefers the cf-error-type header, which the capture keeps", async () => {
+		const p = await page(530, "<html><head><title>Origin DNS error</title></head><body>…</body></html>", { "cf-error-type": "1016", "cf-error-origin": "edge" });
+		expect(p.headers["cf-error-type"]).toBe("1016");
+		expect(describeErrorPage(p)).toEqual({ cloudflareError: "1016", preview: "Origin DNS error" });
+	});
+
+	it("previews an origin error page by its title, with no Cloudflare code", async () => {
+		const p = await page(404, "<!doctype html><title>404 Not Found</title><h1>Nothing here</h1>");
+		expect(describeErrorPage(p)).toEqual({ cloudflareError: null, preview: "404 Not Found" });
+	});
+
+	it("strips tags and control characters, collapses whitespace and caps the preview", async () => {
+		const p = await page(503, `<p>down\u001b[31m for\n\nmaintenance</p>${"x".repeat(500)}`, { "cf-error-type": "not-a-code" });
+		const e = describeErrorPage(p);
+		expect(e?.cloudflareError).toBeNull();
+		expect(e?.preview.startsWith("down [31m for maintenance")).toBe(true);
+		expect(e?.preview).not.toMatch(/[\u0000-\u001f]/);
+		expect(e?.preview.length).toBe(200);
+	});
+
+	it("returns null for a 2xx page", async () => {
+		expect(describeErrorPage(await page(200, "<html></html>"))).toBeNull();
 	});
 });

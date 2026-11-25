@@ -121,9 +121,17 @@ paths:
                     properties:
                       status: { type: integer }
                       finalUrl: { type: string }
+                      contentType: { type: string }
                       sha256: { type: string }
                       bytes: { type: integer }
                       truncated: { type: boolean, description: True when only the first 2 MiB were read }
+                      error:
+                        type: object
+                        description: Only when `status` isn't 2xx. No page was served, so a missing token proves nothing
+                        properties:
+                          cloudflareError: { type: [string, "null"], description: "Cloudflare error code (`cf-error-type` header, else an `error code: 1xxx` body), e.g. 1016" }
+                          preview: { type: string, description: "The page title, else the first 200 characters of its body as plain text (untrusted)" }
+                          note: { type: string }
                   markers:
                     type: object
                     properties:
@@ -682,7 +690,7 @@ components:
         id: { type: integer }
         host: { type: string }
         sample_url: { type: [string, "null"] }
-        source: { type: string, enum: [beacon, referer, brand_protection, manual] }
+        source: { type: string, enum: [beacon, referer, brand_protection, manual], description: "The discovery channel that first saw the host (see src/approvals/README.md#lead-sources)" }
         token_ray: { type: [string, "null"] }
         token: { type: [string, "null"], description: The scraper's beacon-reported token (evidence when a capture finds none) }
         token_ip: { type: [string, "null"], description: The scraper IP inside `token` }

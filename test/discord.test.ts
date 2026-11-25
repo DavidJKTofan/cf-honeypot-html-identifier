@@ -153,4 +153,14 @@ describe("message wording", () => {
 		const p = leadMessage({ id: 1, host: "clone.example", source: "beacon", sampleUrl: null, tokenRay: null, firstSeen: 1, hits: 3, reopened: true }, true);
 		expect(JSON.stringify(p.embeds)).toContain("Re-scraped clone: clone.example");
 	});
+
+	it("explains the lead source, and never calls a Brand Protection match a copy", () => {
+		const lead = { id: 1, host: "look-alike.example", sampleUrl: "https://look-alike.example/", tokenRay: null, firstSeen: 1, hits: 1 };
+		const brand = JSON.stringify(leadMessage({ ...lead, source: "brand_protection" }, true).embeds);
+		expect(brand).toContain("not proof of a copy");
+		expect(brand).not.toContain("appears to run a copy");
+		expect(JSON.stringify(leadMessage({ ...lead, source: "beacon" }, true).embeds)).toContain("reported a valid token");
+		expect(JSON.stringify(leadMessage({ ...lead, source: "referer" }, true).embeds)).toContain("foreign Referer");
+		expect(JSON.stringify(leadMessage({ ...lead, source: "manual" }, true).embeds)).toContain("appears to run a copy");
+	});
 });

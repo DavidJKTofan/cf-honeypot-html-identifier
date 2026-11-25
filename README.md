@@ -242,7 +242,7 @@ The proof doesn't depend on secrecy. A token is valid because only your key can 
 
 ## Found a copy? Validating the identifier
 
-1. **Find:** use a pending lead (`npm run hp -- leads`), or a URL you found yourself.
+1. **Find:** use a pending lead (`npm run hp -- leads`; its [source](src/approvals/README.md#lead-sources) says how strong the signal is), or a URL you found yourself.
 2. **Quick check** (no evidence stored):
    ```bash
    npm run hp -- decode https://suspected-clone.example/page
@@ -250,7 +250,7 @@ The proof doesn't depend on secrecy. A token is valid because only your key can 
    ```bash
    npm run hp -- decode ./saved-page.html
    ```
-   You can also pass the raw token instead of a URL or file. The tool finds every carrier, including renamed meta tags and zero-width runs, decrypts each token, and looks up its Ray ID in Analytics Engine.
+   You can also pass the raw token instead of a URL or file. The tool finds every carrier, including renamed meta tags and zero-width runs, decrypts each token, and looks up its Ray ID in Analytics Engine. If a URL answers with an error instead of a page (for example `530`, Cloudflare error `1016`), `fetched.error` says so: nothing was checked, so `candidates: 0` proves nothing.
 3. **Investigate** (evidence bundle in R2):
    ```bash
    npm run hp -- approve-lead <id>
@@ -487,7 +487,7 @@ Setup, policies and troubleshooting: [src/admin/README.md](src/admin/README.md#c
 |---|---|---|
 | `GET /whoami` | Your own token, fingerprint and admin identity: checks auth, shows what a scraper's token holds | `whoami` |
 | `POST /decode` | Find and verify identifiers in a token, pasted HTML (`html_b64`) or a URL; nothing is stored | `decode <url\|file\|token>` |
-| `GET /leads?status=` | Clone leads from the beacon, foreign Referers and Brand Protection | `leads [pending\|approved\|dismissed\|all]` |
+| `GET /leads?status=` | Clone leads from the beacon, foreign Referers and Brand Protection ([what each source means](src/approvals/README.md#lead-sources)) | `leads [pending\|approved\|dismissed\|all]` |
 | `POST /leads/{id}/approve` · `/dismiss` | Start one investigation of a lead (the Discord **Investigate** button) or dismiss it | `approve-lead <id> [url]` · `dismiss-lead <id>` |
 | `GET /cases` · `POST /cases` | List cases, or investigate a URL you found yourself | `cases` · `case <url>` |
 | `GET /cases/{id}` | Case status, decoded tokens, Workflow status | `case-status <id>` |

@@ -4,7 +4,7 @@ import { collectSignals } from "../../identity/fingerprint";
 import { scanHtml, type ScanResult } from "../../identity/carriers";
 import { json, readJson, safeUrl } from "../../core/util";
 import { badRequest, type AdminRoute } from "../context";
-import { decodeTokens, fetchPage } from "../decode";
+import { decodeTokens, describeErrorPage, fetchPage } from "../decode";
 
 interface DecodeBody {
 	token?: string;
@@ -46,7 +46,16 @@ export const decodeRoutes: AdminRoute = async ({ request, env, cfg, method, path
 	} else if (typeof body.url === "string" && safeUrl(body.url)) {
 		source = "url";
 		const page = await fetchPage(body.url, undefined, undefined, cfg.captureUserAgent);
-		fetched = { status: page.status, finalUrl: page.finalUrl, sha256: page.sha256, bytes: page.bytes.byteLength, truncated: page.truncated };
+		const errorPage = describeErrorPage(page);
+		fetched = {
+			status: page.status,
+			finalUrl: page.finalUrl,
+			contentType: page.contentType,
+			sha256: page.sha256,
+			bytes: page.bytes.byteLength,
+			truncated: page.truncated,
+			...(errorPage ? { error: { ...errorPage, note: `HTTP ${page.status}: no page was served, so a missing token proves nothing` } } : {}),
+		};
 		scan = await scanHtml(new TextDecoder().decode(page.bytes), cfg);
 	} else {
 		return badRequest("provide one of: token, html, html_b64, url (absolute http/https)");

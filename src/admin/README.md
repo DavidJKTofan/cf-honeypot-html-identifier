@@ -14,8 +14,8 @@ Anything unauthenticated gets a plain **404**, so the surface isn't advertised. 
 | `access.ts` | `verifyAccessJwt()`: Access JWT verification with Web Crypto; keys from `https://<team>/cdn-cgi/access/certs`, edge-cached 5 min and refetched once on an unknown `kid` |
 | `openapi.yaml` | OpenAPI 3.1 description of every admin endpoint, its auth schemes and schemas |
 | `context.ts` | `AdminContext`, the admin `Actor`, and shared helpers |
-| `decode.ts` | `fetchPage()` (keeps the first 2 MiB and sets `truncated` instead of failing on bigger pages; 15 s timeout; ordinary browser headers with `CAPTURE_USER_AGENT`, so a clone can't cloak by User-Agent), `decodeTokens()` (open the tokens, enrich from [Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/)) |
-| `routes/decode.ts` | `GET /whoami` (token, fingerprint, `actor`, `auth`) · `POST /decode {token \| html \| html_b64 \| url}` (a `url` response includes `fetched.truncated`) |
+| `decode.ts` | `fetchPage()` (keeps the first 2 MiB and sets `truncated` instead of failing on bigger pages; 15 s timeout; ordinary browser headers with `CAPTURE_USER_AGENT`, so a clone can't cloak by User-Agent), `decodeTokens()` (open the tokens, enrich from [Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/)), `describeErrorPage()` (for a non-2xx capture: the Cloudflare error code from [`cf-error-type`](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-error-headers/) or an `error code: 1xxx` body, and a short plain-text preview) |
+| `routes/decode.ts` | `GET /whoami` (token, fingerprint, `actor`, `auth`) · `POST /decode {token \| html \| html_b64 \| url}` (a `url` response includes `fetched.truncated`, and `fetched.error` when the URL didn't answer 2xx) |
 | `routes/leads.ts` | `GET /leads?status=` · `POST /leads/:id/approve` · `POST /leads/:id/dismiss` |
 | `routes/cases.ts` | `GET/POST /cases` · `GET /cases/:id` · `/report` · `/evidence/:file` · `POST /cases/:id/decision` · `POST /cases/:id/abuse-report` |
 | `routes/flags.ts` | `GET/POST /flags` · `POST /flags/approve` · `POST /flags/reject` · `DELETE /flags/:indicator`. `POST /flags` returns `400` for a CIDR range, an unparseable IP or a malformed JA4. `DELETE` canonicalises the IP first; if the WAF list item couldn't be removed, the response carries a `note` and the daily reconcile removes it |
@@ -30,6 +30,14 @@ Use the CLI wrapper (see [`scripts/`](../../scripts/README.md)):
 ```bash
 npm run hp -- decode https://suspected-clone.example/page
 ```
+
+If the URL doesn't answer with a 2xx page, the result says so in `fetched.error` instead of reporting only `candidates: 0`. For example, a Pages hostname with no live project behind it gives:
+
+```json
+"error": { "cloudflareError": "1016", "preview": "error code: 1016", "note": "HTTP 530: no page was served, so a missing token proves nothing" }
+```
+
+`1016` is Cloudflare's [Origin DNS error](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1016/); other codes are listed under [Cloudflare 1xxx errors](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/). The preview comes from a third-party page, so treat it as data.
 
 ```bash
 npm run hp -- report case-mwurl1pf-982048f6

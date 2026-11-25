@@ -45,6 +45,19 @@ function base(embed: Record<string, unknown>, components: unknown[]): DiscordPay
 	return { embeds: [{ color: ORANGE, footer: { text: FOOTER }, ...embed }], components, allowed_mentions: { parse: [] } };
 }
 
+/**
+ * What each lead source means, shown first so a weak signal isn't read as proof.
+ * Canonical table: src/approvals/README.md#lead-sources
+ */
+const LEAD_SOURCE_TEXT: Record<string, string> = {
+	beacon: "Our beacon script ran on a page on this host and reported a valid token: the page likely carries a copy of the site. ",
+	referer:
+		"Pages on this host load our images, scripts or stylesheets (foreign Referer). It may be a copy that hotlinks them, or a legitimate embed. ",
+	brand_protection:
+		"Brand Protection matched this host's name or a logo against one of your queries. That's a look-alike, **not proof of a copy**: check the page with `npm run hp -- decode <sample URL>` first. ",
+};
+const LEAD_SOURCE_FALLBACK = "A foreign host appears to run a copy of the site. ";
+
 export function leadMessage(n: LeadNotice, interactive: boolean): DiscordPayload {
 	const hint = `\nCLI: \`npm run hp -- approve-lead ${n.id}\` or \`npm run hp -- dismiss-lead ${n.id}\``;
 	return base(
@@ -53,7 +66,7 @@ export function leadMessage(n: LeadNotice, interactive: boolean): DiscordPayload
 			description:
 				(n.reopened
 					? "This host was already investigated, but a visitor's browser just reported a token that names a **new scraper IP**: the copy was refreshed from somewhere else. "
-					: "A foreign host appears to run a copy of the site. ") +
+					: (LEAD_SOURCE_TEXT[n.source] ?? LEAD_SOURCE_FALLBACK)) +
 				"**Investigate** starts one evidence Workflow (capture, decode, URL Scanner, Threat Intel). Nothing is enforced at this step." +
 				(interactive ? "" : hint),
 			fields: [

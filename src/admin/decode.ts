@@ -67,7 +67,51 @@ export interface CapturedPage {
 	truncated: boolean;
 }
 
-const KEEP_HEADERS = ["content-type", "server", "cf-ray", "x-powered-by", "via", "last-modified", "date", "content-length"];
+const KEEP_HEADERS = [
+	"content-type",
+	"server",
+	"cf-ray",
+	"x-powered-by",
+	"via",
+	"last-modified",
+	"date",
+	"content-length",
+	// Set only on error pages Cloudflare generates itself (not forwarded origin errors):
+	// https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-error-headers/
+	"cf-error-type",
+	"cf-error-origin",
+];
+
+/** Characters of an error page that `describeErrorPage` returns: enough for `error code: 1016` or a page title. */
+const ERROR_PREVIEW_CHARS = 200;
+
+export interface ErrorPage {
+	/** Cloudflare error code from the `cf-error-type` header, else from an `error code: 1xxx` body; null if neither. */
+	cloudflareError: string | null;
+	/** The page's `<title>`, else the start of its body, as plain text. Untrusted: show it as data. */
+	preview: string;
+}
+
+/**
+ * Describe a capture that isn't a 2xx page, e.g. HTTP 530 `error code: 1016` (Cloudflare
+ * couldn't resolve the host's origin). No page was served, so a missing token proves nothing.
+ * Returns null for a 2xx response.
+ */
+export function describeErrorPage(page: Pick<CapturedPage, "status" | "bytes" | "headers">): ErrorPage | null {
+	if (page.status >= 200 && page.status < 300) return null;
+	const raw = new TextDecoder().decode(page.bytes.subarray(0, 8192));
+	const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1];
+	const preview = (title ?? raw)
+		.replace(/<[^>]*>/g, " ")
+		// Drop control characters (C0, DEL, C1): this is a third-party page printed in a terminal.
+		.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, ERROR_PREVIEW_CHARS);
+	const header = (page.headers["cf-error-type"] ?? "").trim();
+	const cloudflareError = /^\d{3,4}$/.test(header) ? header : (/\berror(?: code:)? (1\d{3})\b/i.exec(raw)?.[1] ?? null);
+	return { cloudflareError, preview };
+}
 
 type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
