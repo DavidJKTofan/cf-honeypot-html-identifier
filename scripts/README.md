@@ -22,6 +22,7 @@ npm run hp -- <command> [args]
 | `report <id> [json]` · `evidence <id> <file>` | Read the evidence bundle (for example `abuse-report-draft.json`) |
 | `decide <id> <decoy\|block\|none> [ttlDays]` | Human decision for a case awaiting one |
 | `abuse-report <id>` | Submit the Cloudflare abuse report draft (needs `ABUSE_REPORTS="submit"`) |
+| `abuse-report-reset <id>` | Clear a submission stuck for over 10 minutes, after checking the account's submitted reports (a filed report is never reset) |
 | `flags [status]` · `approve-flags <ind…>\|--all [--block]` · `reject-flags <ind…>` | Pending trap flags |
 | `flag <ip> [decoy\|block] [ttlDays]` · `unflag <indicator>` | Manual flag for a single IPv4 or IPv6 address (CIDR ranges and Cloudflare IPs are refused) |
 | `notify-test` · `notify-flags` | Test the notifier, or send the pending-flag digest now |

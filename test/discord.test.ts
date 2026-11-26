@@ -8,6 +8,7 @@ import { handleDiscordInteraction } from "../src/notify/discord/interactions";
 import { caseMessage, decodeAction, encodeAction, flagsMessage, leadMessage, resolvedPayload } from "../src/notify/discord/messages";
 import { DiscordBotNotifier, DiscordWebhookNotifier } from "../src/notify/discord/notifier";
 import { verifyDiscordSignature } from "../src/notify/discord/verify";
+import { flakyD1 } from "./flaky-d1";
 
 const APPROVER = "111111111111111111";
 const STRANGER = "222222222222222222";
@@ -48,9 +49,9 @@ const click = (customId: string, userId: string) => ({
 	message: { id: "444", embeds: [{ title: "x", fields: [] }], components: [] },
 });
 
-async function call(req: Request) {
+async function call(req: Request, callEnv: Env = env) {
 	const ctx = createExecutionContext();
-	const res = await handleDiscordInteraction(req, env, ctx, cfg);
+	const res = await handleDiscordInteraction(req, callEnv, ctx, cfg);
 	await waitOnExecutionContext(ctx);
 	return res;
 }
@@ -94,6 +95,18 @@ describe("Discord interactions endpoint", () => {
 		).first<{ id: number }>();
 		const res = await call(await signed(click(encodeAction("lead", "dismiss", lead!.id), APPROVER)));
 		expect(await res.json()).toEqual({ type: 6 });
+		const row = await env.DB.prepare("SELECT status FROM leads WHERE id = ?").bind(lead!.id).first<{ status: string }>();
+		expect(row?.status).toBe("dismissed");
+	});
+
+	it("retries a click's D1 write after a transient error (L3)", async () => {
+		const lead = await env.DB.prepare(
+			"INSERT INTO leads (host, sample_url, source, status, first_seen, last_seen) VALUES ('discord-retry.example', NULL, 'manual', 'pending', 1, 1) RETURNING id",
+		).first<{ id: number }>();
+		const flaky = flakyD1(env.DB, 2);
+		const res = await call(await signed(click(encodeAction("lead", "dismiss", lead!.id), APPROVER)), { ...env, DB: flaky.db } as Env);
+		expect(await res.json()).toEqual({ type: 6 });
+		expect(flaky.state.thrown).toBe(2);
 		const row = await env.DB.prepare("SELECT status FROM leads WHERE id = ?").bind(lead!.id).first<{ status: string }>();
 		expect(row?.status).toBe("dismissed");
 	});

@@ -1,7 +1,7 @@
 /** POST /notify/test · POST /notify/flags · POST /maintenance/run */
+import { pendingFlagDigest } from "../../approvals/digest";
 import { json, randomHex } from "../../core/util";
 import { getNotifier, notifySafe } from "../../notify";
-import { topPendingFlags } from "../../storage/d1";
 import type { AdminRoute } from "../context";
 
 export const opsRoutes: AdminRoute = async ({ env, cfg, method, path }) => {
@@ -20,16 +20,10 @@ export const opsRoutes: AdminRoute = async ({ env, cfg, method, path }) => {
 	}
 
 	if (path === "/notify/flags") {
-		const { flags, total } = await topPendingFlags(env.DB, 5);
+		const { flags, total, inOpenCase } = await pendingFlagDigest(env.DB, 5);
 		if (total === 0) return json({ ok: true, sent: false, reason: "no pending flags" });
-		const ref = await notifySafe(
-			env,
-			cfg,
-			"flags",
-			(n) => n.notifyFlags(flags.map((f) => ({ indicator: f.indicator, reason: f.reason, hits: f.hits, createdAt: f.created_at })), total),
-			{ rateLimit: false },
-		);
-		return json({ ok: ref !== null, total, ref });
+		const ref = await notifySafe(env, cfg, "flags", (n) => n.notifyFlags(flags, total), { rateLimit: false });
+		return json({ ok: ref !== null, total, inOpenCase, ref });
 	}
 
 	if (path === "/maintenance/run") {

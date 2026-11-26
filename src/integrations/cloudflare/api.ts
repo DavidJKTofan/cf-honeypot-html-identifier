@@ -1,10 +1,11 @@
 /**
  * Minimal Cloudflare REST client for the services that have no Workers binding:
- * WAF Lists, Threat Intel, URL Scanner and Brand Protection.
+ * WAF Lists, Threat Intel, URL Scanner, Brand Protection and Abuse Reports.
  * (Best practice is "bindings, not REST"; these are the exceptions.)
  *
  * Requires the optional CF_API_TOKEN secret, scoped to:
  *   Account Filter Lists Edit · Intel Read · URL Scanner Edit
+ *   (plus Trust and Safety Write to submit abuse reports, which also lets it list them)
  * Without it, cfApi() returns null and callers mark their step "skipped".
  *
  * Retries: 429 is always retried (the request was rejected, not processed). 5xx and
@@ -32,7 +33,7 @@ interface Envelope<T> {
 	success?: boolean;
 	errors?: { code: number; message: string }[];
 	result?: T;
-	result_info?: { cursors?: { after?: string } };
+	result_info?: { cursors?: { after?: string }; page?: number; total_pages?: number; total_count?: number };
 }
 
 export interface ListItem {
@@ -45,6 +46,18 @@ export interface ListItem {
 export interface ListOperationResult {
 	status: "completed" | "failed" | "timeout";
 	error?: string;
+}
+
+/** One abuse report this account submitted (`GET /abuse-reports/submitted`). */
+export interface SubmittedAbuseReport {
+	/** Public report code. */
+	id: string;
+	/** When it was submitted (RFC 3339). */
+	cdate?: string;
+	domain?: string;
+	/** submitted · accepted · denied */
+	status?: string;
+	type?: string;
 }
 
 export interface BrandQuery {
@@ -81,7 +94,8 @@ export interface CfApiOptions {
 }
 
 interface CallOptions {
-	query?: Record<string, string | number>;
+	/** An array value repeats the parameter (`domain=a&domain=b`). */
+	query?: Record<string, string | number | readonly string[]>;
 	body?: unknown;
 	/** Safe to repeat after a 5xx or network error (same effect twice). */
 	idempotent?: boolean;
@@ -130,7 +144,7 @@ export class CfApi {
 
 	private async raw(method: string, path: string, opts: CallOptions = {}): Promise<Response> {
 		const url = new URL(`${BASE}/accounts/${this.accountId}${path}`);
-		for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
+		for (const [k, v] of Object.entries(opts.query ?? {})) for (const x of Array.isArray(v) ? v : [v]) url.searchParams.append(k, String(x));
 		const retryable = opts.idempotent ?? (method === "GET" || method === "DELETE");
 		const deadline = Date.now() + this.retryBudgetMs;
 
@@ -303,6 +317,28 @@ export class CfApi {
 	/** Never retried on 5xx: a legal report must not be filed twice. */
 	submitAbuseReport(reportParam: string, body: Record<string, unknown>): Promise<unknown> {
 		return this.request("POST", `/abuse-reports/${encodeURIComponent(reportParam)}`, { body, bare: true, idempotent: false });
+	}
+
+	/**
+	 * One page of the abuse reports this account SUBMITTED (not the ones filed against it,
+	 * which is `GET /abuse-reports`). `per_page` ≤ 200. Trust and Safety Read or Write.
+	 * https://developers.cloudflare.com/api/resources/abuse_reports/subresources/submitted/methods/list/
+	 */
+	async listSubmittedAbuseReports(
+		opts: { createdAfter?: string; createdBefore?: string; domains?: readonly string[]; page?: number; perPage?: number } = {},
+	): Promise<{ reports: SubmittedAbuseReport[]; page: number; totalPages: number | null }> {
+		const page = Math.max(1, opts.page ?? 1);
+		const env = (await this.call<{ reports?: SubmittedAbuseReport[] }>("GET", "/abuse-reports/submitted", {
+			query: {
+				page,
+				per_page: Math.min(200, Math.max(1, opts.perPage ?? 200)),
+				...(opts.createdAfter ? { created_after: opts.createdAfter } : {}),
+				...(opts.createdBefore ? { created_before: opts.createdBefore } : {}),
+				...(opts.domains?.length ? { domain: opts.domains } : {}),
+			},
+		})) as Envelope<{ reports?: SubmittedAbuseReport[] }> | null;
+		const totalPages = env?.result_info?.total_pages;
+		return { reports: env?.result?.reports ?? [], page, totalPages: typeof totalPages === "number" ? totalPages : null };
 	}
 
 	// ------------------------------------------------------------ Brand Protection

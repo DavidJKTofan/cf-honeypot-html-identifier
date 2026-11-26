@@ -8,10 +8,12 @@
  * - Bearer ADMIN_TOKEN (local dev, or no Access app): compared in constant time.
  * Anything unauthenticated gets a plain 404 so the surface is not advertised.
  *
- * Every enforcement path is an explicit human action (see src/approvals/).
+ * Every enforcement path is an explicit human action (see src/approvals/). D1 writes behind
+ * these routes retry transient errors (`envWithD1WriteRetries`, src/storage/retry.ts).
  */
 import type { Config } from "../core/config";
 import { BodyTooLargeError, errorMessage, json, log, notFound, timingSafeEqualStr } from "../core/util";
+import { envWithD1WriteRetries } from "../storage/retry";
 import type { Actor } from "../approvals/actions";
 import { verifyAccessJwt } from "./access";
 import { ADMIN_ACTOR, type AdminContext, type AdminRoute } from "./context";
@@ -46,7 +48,17 @@ export async function handleAdmin(request: Request, env: Env, ctx: ExecutionCont
 
 	const url = new URL(request.url);
 	const path = url.pathname.slice(cfg.adminPrefix.length).replace(/\/+$/, "") || "/";
-	const c: AdminContext = { request, env, ctx, cfg, url, method: request.method, path, seg: path.split("/").filter(Boolean), actor };
+	const c: AdminContext = {
+		request,
+		env: envWithD1WriteRetries(env),
+		ctx,
+		cfg,
+		url,
+		method: request.method,
+		path,
+		seg: path.split("/").filter(Boolean),
+		actor,
+	};
 
 	try {
 		for (const route of ROUTES) {

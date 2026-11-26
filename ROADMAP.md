@@ -1,7 +1,7 @@
 # Roadmap
 
 This file has five parts:
-- **[Second code review (2026-11-25)](#second-code-review-2026-11-25)**: bugs found in a second full review, all fixed, plus the open items from the first review that were closed with them
+- **[Second code review (2026-11-25)](#second-code-review-2026-11-25)**: bugs found in a second full review, all fixed, plus the open items from the first review that were closed with them (and the [follow-up of 2026-11-26](#follow-up-2026-11-26))
 - **[Code review findings (2026-11-24)](#code-review-findings-2026-11-24)**: every finding from the full code review, what was fixed, and a concrete fix for what is still open, so a later session can pick it up
 - **[Live test findings and scraper bypasses (2026-11-25)](#live-test-findings-and-scraper-bypasses-2026-11-25)**: what a live end-to-end test against the demo found, how a scraper would bypass the identifier, what was fixed, and designs for the rest
 - a **[production-readiness review](#production-readiness-review)**: what to check carefully before running this at scale
@@ -28,6 +28,14 @@ A second full review of `src/` against the [Workers best practices](https://deve
 
 Also closed in this pass: the open parts of **H1** (block to decoy) and **H2** (the Workflow's `expired`/`closed` writes), and **L6**, **L9** (docs), **L11**, **L16** below.
 
+### Follow-up (2026-11-26)
+
+Closed: **H2** part b (the stuck abuse-report claim), **L3** (D1 write retries), the rest of **L14** (`MaintenanceWorkflow` tests) and **Digest context** from the live-test designs. Each fix has a test that fails without it.
+- **H2b.** `POST /cases/{id}/abuse-report/reset` (`npm run hp -- abuse-report-reset <id>`) clears a `submitting` claim older than 10 minutes. It first looks for `abuse-report-result.json` in R2 and lists the account's [submitted reports](https://developers.cloudflare.com/api/resources/abuse_reports/subresources/submitted/methods/list/) since the claim (`CfApi.listSubmittedAbuseReports`). A report for the case's host (or with no domain) means it was filed: its record replaces the claim instead. The clear is conditional (`UPDATE … WHERE id = ? AND abuse_report = <claim>`).
+- **L3.** `src/storage/retry.ts`: `envWithD1WriteRetries(env)` wraps `DB` for the admin router and the Discord interactions endpoint. Writes retry the three transient errors from the D1 guide, with jittered exponential backoff and at most 5 attempts; reads pass through.
+- **L14.** `test/maintenance.test.ts` drives `MaintenanceWorkflow`: expiry, a WAF removal that fails (rows kept), reconcile, Referer lead steps, the digest, and `POST /maintenance/run` through `introspectWorkflow`.
+- **Digest context.** The pending-flags digest marks an IP that is also in an open case ("Also in case …: decide there"); `pendingFlagDigest` in `src/approvals/digest.ts` serves the Workflow and `POST /notify/flags`.
+
 ## Code review findings (2026-11-24)
 
 The review checked the code against the [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/), the D1 guides ([query](https://developers.cloudflare.com/d1/best-practices/query-d1/), [indexes](https://developers.cloudflare.com/d1/best-practices/use-indexes/), [retries](https://developers.cloudflare.com/d1/best-practices/retry-queries/), [import and export](https://developers.cloudflare.com/d1/best-practices/import-export-data/)) and the Workflows [Workers API](https://developers.cloudflare.com/workflows/build/workers-api/) and [step context](https://developers.cloudflare.com/workflows/build/step-context/) pages.
@@ -39,7 +47,7 @@ The review checked the code against the [Workers best practices](https://develop
 | ID | Finding | Status |
 |---|---|---|
 | H1 | Expired WAF blocks could stay in the list forever (and block-to-decoy left list items) | ✅ |
-| H2 | Concurrent approvals raced (duplicate Workflows, stuck cases, double abuse reports) | 🟡 |
+| H2 | Concurrent approvals raced (duplicate Workflows, stuck cases, double abuse reports) | ✅ |
 | H3 | WAF list writes collided (one write per IP; `429` swallowed) | ✅ |
 | M1 | Manual flags accepted any string as an IP, including CIDRs covering Cloudflare ranges | ✅ |
 | M2 | One public token could create unlimited beacon leads | ✅ |
@@ -60,11 +68,11 @@ The review checked the code against the [Workers best practices](https://develop
 - *Now:* `MaintenanceWorkflow` finds expired flags, removes their list items (with retries), and deletes only the rows whose removal succeeded. A new daily **reconcile** step removes `cf-honeypot:` list items that have no active block flag and re-adds missing ones. Manual `unflag` removes the list item before the row.
 - ✅ *Fixed 2026-11-25:* switching a flag from block to decoy used to leave the list item until the next reconcile. `upsertActiveFlag` now returns the row it replaced (read in the same `db.batch()` transaction), and `applyFlag` and case decisions remove the list item of a downgraded active block (`downgradedBlockIp`).
 
-**H2. Concurrent approvals raced.** 🟡
+**H2. Concurrent approvals raced.** ✅
 - *Was:* every action read the state, then acted. A double click could start two cases and two Workflows for one host. A late `applying` write could overwrite the Workflow's `closed` forever (blocking that host). Two clicks could file the same abuse report twice.
 - *Now:* every action claims its row with a conditional `UPDATE … WHERE status = …` and checks [`meta.changes`](https://developers.cloudflare.com/d1/worker-api/return-object/). Migration `0003` adds a partial unique index for one open case per host. A failed `INVESTIGATE.create` marks the case `errored` and puts the lead back to `pending`. An abuse report is claimed (`submitting`) before the API call.
-- *Open:*
-  - If the Worker dies during the abuse-report API call, the `submitting` marker blocks retries. **Fix:** after checking the account's [submitted reports](https://developers.cloudflare.com/api/resources/abuse_reports/methods/list/), reset it with `UPDATE cases SET abuse_report = NULL WHERE id = ?`. An admin route for this would help.
+- *Was open, now fixed:*
+  - ✅ *Fixed 2026-11-26:* if the Worker died during the abuse-report API call, the `submitting` marker blocked the case for good. `POST /cases/{id}/abuse-report/reset` clears a marker older than 10 minutes, after checking R2 and the account's [submitted reports](https://developers.cloudflare.com/api/resources/abuse_reports/subresources/submitted/methods/list/) since the claim (a filed report is recorded, never reset), with `UPDATE cases SET abuse_report = NULL WHERE id = ? AND abuse_report = ?`.
   - ✅ *Fixed 2026-11-25:* the Workflow wrote `expired` and `closed` unconditionally, so a click that claimed the case as the 7-day wait timed out was told "delivered" and then overwritten as `expired`. Both writes are now conditional (`setCaseStatusIf`), and after a late claim a second `waitForEvent` ("wait for late decision", 10 minutes) picks up the buffered event and applies it.
 
 **H3. WAF list writes collided.** ✅
@@ -105,7 +113,7 @@ Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/m
 |---|---|---|---|
 | L1 | The purge filtered on `expires_at` alone, and `openCaseForHost` on an unindexed `host` | ✅ | Migration `0003`: `idx_flags_expires`, the partial unique index on `cases(host)`, and [`PRAGMA optimize`](https://developers.cloudflare.com/d1/sql-api/sql-statements/#pragma-optimize) |
 | L2 | `approveFlags`/`rejectFlags` made one round trip per indicator; `upsertActiveFlag` re-selected the row | ✅ | [`db.batch()`](https://developers.cloudflare.com/d1/worker-api/d1-database/) in chunks of 100; `RETURNING *` |
-| L3 | D1 writes outside Workflows are not retried (D1 retries only reads) | ⬜ | Wrap admin and Discord writes in the helper from [Retry queries](https://developers.cloudflare.com/d1/best-practices/retry-queries/): retry on "Network connection lost", "storage caused object to be reset" and "reset because its code was updated", with jittered exponential backoff, at most 5 attempts. Claims are idempotent, so retrying them is safe |
+| L3 | D1 writes outside Workflows are not retried (D1 retries only reads) | ✅ | `envWithD1WriteRetries` (`src/storage/retry.ts`) wraps `DB` for the admin router and Discord callbacks, per [Retry queries](https://developers.cloudflare.com/d1/best-practices/retry-queries/): writes retry on "Network connection lost", "storage caused object to be reset" and "reset because its code was updated", with jittered exponential backoff, at most 5 attempts; reads pass through. Claims are idempotent: a retry of a committed claim sees `meta.changes` = 0 and reports "already handled" |
 | L4 | `updateCase` built column names from object keys | ✅ | Runtime allowlist |
 | L5 | Beacon events kept the clone visitor's User-Agent, city, ASN, RTT and Ray ID | ✅ | `visitorSafeSignals()` blanks them |
 | L6 | `loadCloudflareRanges` trusted any non-empty API answer | 🟡 | ✅ The live list is unioned with `CLOUDFLARE_IPS_SNAPSHOT` (`unionWithSnapshot`), so a protected range can never be dropped. ⬜ Refresh the snapshot (and its etag) in CI |
@@ -116,7 +124,7 @@ Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/m
 | L11 | Discord User-Agent said `0.2` while `package.json` says `0.1.0` | ✅ | Both say `0.1.0`. Bump them together with each tag |
 | L12 | No `no-floating-promises` lint, which the best practices recommend | ⬜ | Add [`@typescript-eslint/no-floating-promises`](https://typescript-eslint.io/rules/no-floating-promises/) or [oxlint's rule](https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html) and run it in CI |
 | L13 | No CI, and no staging environment | ⬜ | GitHub Actions or [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) running typecheck, tests and lint; an `env.staging` with its own keys and resources ([environments](https://developers.cloudflare.com/workers/wrangler/environments/)) |
-| L14 | No end-to-end Workflow tests | 🟡 | ✅ `test/investigate.test.ts` drives `InvestigateWorkflow` with the Vitest [Workflows test APIs](https://developers.cloudflare.com/workers/testing/vitest-integration/test-apis/#workflows). ⬜ The same for `MaintenanceWorkflow` |
+| L14 | No end-to-end Workflow tests | ✅ | `test/investigate.test.ts` and `test/maintenance.test.ts` drive `InvestigateWorkflow` and `MaintenanceWorkflow` with the Vitest [Workflows test APIs](https://developers.cloudflare.com/workers/testing/vitest-integration/test-apis/#workflows) |
 | L15 | Discord clicks run in [`ctx.waitUntil`](https://developers.cloudflare.com/workers/runtime-apis/context/) (30 s after the response) | 🟡 | Request-path WAF calls now cap at 8 s. If flag approvals grow, run them in a Workflow and post the result |
 | L16 | `report.md` included attacker-influenced strings (PTR names, AS organization, registrar) unescaped | ✅ | `escapeMd()` for every untrusted value in the Markdown (the copy's URL, User-Agent, DNS answers, URL Scanner and Intel fields) |
 | L17 | Shared egress IPs outside Cloudflare's ranges (VPNs, relays, CGNAT) can still be flagged | ⬜ | See production-readiness item 1; show [Managed IP List](https://developers.cloudflare.com/waf/tools/lists/managed-lists/) membership (`cf.vpn`, `cf.anonymizer`) in the approval message |
@@ -219,7 +227,7 @@ It touches every enforcement path, so it needs its own change with tests for eac
 
 **Re-open identity.** A live proxy's Worker egress IP can change, which re-opens its lead (bounded to once per 24 h). Treat all Cloudflare IPs as one identity in `recordLead` if that turns out noisy.
 
-**Digest context.** In the pending-flags digest, annotate an IP that is also part of an open case ("in case …: decide there"), so approvers don't decide the same IP twice.
+**Digest context.** ✅ *Built 2026-11-26:* the pending-flags digest annotates an IP that is also part of an open case ("Also in case …: decide there"), so approvers don't decide the same IP twice. The buttons stay, since rejecting the trap flag is still a valid choice.
 
 ## Production-readiness review
 

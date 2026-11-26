@@ -44,7 +44,7 @@ describe("OpenAPI spec (src/admin/openapi.yaml)", () => {
 
 	it("documents every admin operation", () => {
 		expect(spec.startsWith("openapi: 3.1.0")).toBe(true);
-		expect(ops).toHaveLength(20);
+		expect(ops).toHaveLength(21);
 		expect(new Set(ops).size).toBe(ops.length);
 	});
 

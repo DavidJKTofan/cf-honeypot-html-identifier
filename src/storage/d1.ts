@@ -559,12 +559,24 @@ export async function claimAbuseReport(db: D1Database, id: string, marker: strin
 	return (r.meta.changes ?? 0) === 1;
 }
 
-/** Undo `claimAbuseReport` after a failed submission (only if our marker is still there). */
-export async function releaseAbuseReport(db: D1Database, id: string, marker: string): Promise<void> {
-	await db
-		.prepare(`UPDATE cases SET abuse_report = NULL, updated_at = ? WHERE id = ? AND abuse_report = ?`)
-		.bind(nowSec(), id, marker)
+/**
+ * Replace a case's abuse-report value only while it is still exactly `from` (a conditional
+ * write, like every claim). Returns true when this call changed it.
+ */
+export async function swapAbuseReport(db: D1Database, id: string, from: string, to: string | null): Promise<boolean> {
+	const r = await db
+		.prepare(`UPDATE cases SET abuse_report = ?, updated_at = ? WHERE id = ? AND abuse_report = ?`)
+		.bind(to, nowSec(), id, from)
 		.run();
+	return (r.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Undo `claimAbuseReport` (only if our marker is still there): after a failed submission, or
+ * when an admin resets a stuck marker that provably never became a report.
+ */
+export async function releaseAbuseReport(db: D1Database, id: string, marker: string): Promise<boolean> {
+	return swapAbuseReport(db, id, marker, null);
 }
 
 export async function listCases(db: D1Database, limit = 50): Promise<CaseRow[]> {
@@ -578,6 +590,28 @@ export async function insertCaseTokens(db: D1Database, rows: CaseTokenRow[]): Pr
 		 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (case_id, ray_id) DO NOTHING`,
 	);
 	await db.batch(rows.map((r) => stmt.bind(r.case_id, r.ray_id, r.ip, r.asn, r.country, r.issued_at, r.carrier)));
+}
+
+/** Case statuses in which a decision is still ahead (the partial unique index allows one per host). */
+export const OPEN_CASE_STATUSES = ["collecting", "awaiting_decision", "applying"] as const satisfies readonly CaseStatus[];
+
+/**
+ * Open cases whose decoded tokens name one of these IPs (canonical form, as tokens store them),
+ * newest case first. Read-only; at most a handful of IPs (the flag digest shows 5).
+ */
+export async function openCasesForIps(db: D1Database, ips: readonly string[]): Promise<{ ip: string; case_id: string; status: CaseStatus }[]> {
+	const unique = [...new Set(ips)].slice(0, 100);
+	if (unique.length === 0) return [];
+	const { results } = await db
+		.prepare(
+			`SELECT DISTINCT ct.ip AS ip, c.id AS case_id, c.status AS status, c.created_at AS created_at
+			 FROM case_tokens ct JOIN cases c ON c.id = ct.case_id
+			 WHERE ct.ip IN (${unique.map(() => "?").join(",")}) AND c.status IN (${OPEN_CASE_STATUSES.map(() => "?").join(",")})
+			 ORDER BY c.created_at DESC`,
+		)
+		.bind(...unique, ...OPEN_CASE_STATUSES)
+		.all<{ ip: string; case_id: string; status: CaseStatus }>();
+	return results.map(({ ip, case_id, status }) => ({ ip, case_id, status }));
 }
 
 export async function getCaseTokens(db: D1Database, caseId: string): Promise<CaseTokenRow[]> {

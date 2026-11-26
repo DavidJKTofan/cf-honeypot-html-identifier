@@ -125,4 +125,8 @@ npm run hp -- approve-flags ip:203.0.113.7 --block
 npm run hp -- abuse-report case-abc
 ```
 
-The last one only works with `ABUSE_REPORTS="submit"`.
+The last one only works with `ABUSE_REPORTS="submit"`. If a submission died mid-call (the case stays "in progress" for over 10 minutes), clear it with the command below. It first checks the account's [submitted reports](https://developers.cloudflare.com/api/resources/abuse_reports/subresources/submitted/methods/list/), so a report that was filed is recorded instead of reset:
+
+```bash
+npm run hp -- abuse-report-reset case-abc
+```

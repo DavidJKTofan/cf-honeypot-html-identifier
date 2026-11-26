@@ -45,7 +45,9 @@ It runs these steps:
 - purge stale leads
 - foreign Referers (Analytics Engine) → leads, **one step per host** (at most 50)
 - Brand Protection matches from the last 2 days (at most 25) → leads, one step per host; a failure is recorded in the summary instead of failing the run
-- **pending-flag digest** to the notifier
+- **pending-flag digest** to the notifier. An IP that is also part of an open case (`collecting`, `awaiting_decision`, `applying`) says so ("Also in case …: decide there"), so it isn't decided twice
+
+`test/maintenance.test.ts` drives these steps end to end with the [Workflows test APIs](https://developers.cloudflare.com/workers/testing/vitest-integration/test-apis/#workflows).
 
 ## Usage
 

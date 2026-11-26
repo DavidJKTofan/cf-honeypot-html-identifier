@@ -6,7 +6,8 @@
  * 2. PING → PONG.
  * 3. Button click → check the clicker is an approver → ACK within 3 s with
  *    DEFERRED_UPDATE_MESSAGE, then run the shared approval action in
- *    waitUntil and edit the original message with the outcome.
+ *    waitUntil and edit the original message with the outcome. Its D1 writes retry
+ *    transient errors (`envWithD1WriteRetries`, src/storage/retry.ts).
  */
 import {
 	approveFlagsAction,
@@ -20,6 +21,7 @@ import {
 } from "../../approvals/actions";
 import type { Config } from "../../core/config";
 import { BodyTooLargeError, errorMessage, json, log, notFound, readStreamLimited } from "../../core/util";
+import { envWithD1WriteRetries } from "../../storage/retry";
 import { discordApi } from "../index";
 import { decodeAction, resolvedPayload, type ComponentAction, type RemoveMode } from "./messages";
 import { verifyDiscordSignature } from "./verify";
@@ -122,7 +124,7 @@ export async function handleDiscordInteraction(request: Request, env: Env, ctx: 
 	ctx.waitUntil(
 		(async () => {
 			try {
-				const result = await dispatch(env, cfg, action, actor);
+				const result = await dispatch(envWithD1WriteRetries(env), cfg, action, actor);
 				const summary = `${result.ok ? "Done" : "Not applied"}: ${result.summary}`;
 				await api.editOriginal(i.application_id, i.token, resolvedPayload(i.message ?? null, summary, removeModeFor(action, customId)));
 			} catch (err) {

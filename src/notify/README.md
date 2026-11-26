@@ -23,7 +23,7 @@ This folder asks a human before anything consequential happens, so automation ca
 
 - **Leads:** notified **once per host**, on first sight. Repeat beacons only increase the lead's hit count, and lead writes themselves are capped per host, per token and globally (see [honeypot](../honeypot/README.md)). Two bounded exceptions: the first beacon token for a pending `referer` or `brand_protection` lead updates its message once ([corroborated](../approvals/README.md#corroborated-leads)), and a re-scrape re-opens an investigated host at most once per 24 hours ([re-scraped](../approvals/README.md#re-scraped-hosts)).
 - **Rate limit:** `NOTIFY_LIMITER` allows 20 notifications per minute per location. When it's exceeded, the notification is skipped and the lead stays visible in `npm run hp -- leads`.
-- **Trap flags:** these can be numerous, so they arrive as **one daily digest** of the top 5 (`npm run hp -- notify-flags` sends one now).
+- **Trap flags:** these can be numerous, so they arrive as **one daily digest** of the top 5 (`npm run hp -- notify-flags` sends one now). An IP that is also part of an open case says so ("Also in case …: decide there"), so it isn't decided twice.
 - **Duplicate approvals** never start a second Workflow: the lead is claimed atomically, and a partial unique index in D1 allows only one open case per host.
 - **Concurrency:** the `honeypot-investigate` Workflow is capped at 5 running instances in `wrangler.jsonc` ([concurrency limits](https://developers.cloudflare.com/workflows/build/concurrency-limits/)). Instances waiting for a decision don't count.
 

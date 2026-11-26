@@ -100,7 +100,7 @@ A trap flag is an IP that followed the hidden `/catalog/full-export` link. These
 
 Blocking a shared IP affects everyone behind it, so check the IP before blocking (ROADMAP, "Shared and innocent IPs").
 
-The digest buttons act on **one IP** and name it; the case buttons below act on **every IP in the case** and say "case". The labels differ on purpose: in the live test, an approver meant to decoy a trap flag and clicked the case's Decoy button instead. If an IP is both a pending trap flag and part of a case, deciding the case also activates that flag (its trap provenance is kept in the reason).
+The digest buttons act on **one IP** and name it; the case buttons below act on **every IP in the case** and say "case". The labels differ on purpose: in the live test, an approver meant to decoy a trap flag and clicked the case's Decoy button instead. If an IP is both a pending trap flag and part of a case, deciding the case also activates that flag (its trap provenance is kept in the reason). The digest says so under that IP ("Also in case `case-…`: decide there"), and keeps its buttons in case you only want to reject the trap flag.
 
 ### Clone lead (first sight of a foreign host)
 

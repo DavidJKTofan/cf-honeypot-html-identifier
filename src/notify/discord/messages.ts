@@ -148,7 +148,12 @@ export function flagsMessage(flags: FlagNotice[], total: number, interactive: bo
 				(interactive ? "" : "\nCLI: `npm run hp -- approve-flags <indicator>` or `npm run hp -- reject-flags <indicator>`"),
 			fields: shown.map((f) => ({
 				name: f.indicator.slice(0, 256),
-				value: `${(f.reason ?? "trap hit").slice(0, 200)} · ${f.hits} hit(s) · <t:${f.createdAt}:R>`,
+				value:
+					`${(f.reason ?? "trap hit").slice(0, 200)} · ${f.hits} hit(s) · <t:${f.createdAt}:R>` +
+					(f.openCase
+						? `\n**Also in case ${code(f.openCase.id)}** (${f.openCase.status}): decide there, so this IP isn't decided twice.` +
+							(interactive ? "" : ` CLI: \`npm run hp -- case-status ${f.openCase.id}\``)
+						: ""),
 			})),
 		},
 		interactive
