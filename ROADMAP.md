@@ -56,7 +56,7 @@ The review checked the code against the [Workers best practices](https://develop
 | M5 | Evidence capture failed on pages over 2 MiB | ✅ |
 | M6 | D1 read replication was assumed but never enabled | ✅ (docs) |
 | M7 | A D1 read on every HTML request is the scaling ceiling | ⬜ |
-| M8 | AES-GCM key volume, and only one previous key for decoding | ⬜ |
+| M8 | AES-GCM key volume, and only one previous key for decoding | ✅ (rotation still manual) |
 | M9 | Workflow steps weren't idempotent | ✅ |
 | L1–L19 | D1, Workflow, privacy, robots.txt, tooling and docs hardening | see below |
 | R1–R2 | IDs in tracked files and in git history | ✅ |
@@ -100,10 +100,14 @@ The review checked the code against the [Workers best practices](https://develop
 
 Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/metrics-analytics/) and Workers CPU time under load.
 
-**M8. AES-GCM key volume.** ⬜ With random 96-bit IVs, [NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final) limits one key to about 2³² encryptions. That's roughly 43 days at 100 million pages a day. An IV collision allows forged tokens, which could frame someone else. Meanwhile `loadTokenKeys` keeps only one previous key, so rotating often loses the ability to decode older copies. **Fix:**
-- Token version 2 with a 1-byte key ID in the clear (the payload has room; keep 91 characters by shortening the Ray ID or the IP for IPv4, or accept a slightly longer token).
-- A key ring secret, for example `TOKEN_KEYS` as JSON `{ "3": "<base64>", "2": "…" }`, with the newest ID used for sealing and all IDs for decoding. Consider [Secrets Store](https://developers.cloudflare.com/secrets-store/).
-- Rotate on a schedule sized to traffic (for example monthly), alert when a retired key's tokens show up, and keep old keys for decoding only.
+**M8. AES-GCM key volume.** ✅ With random 96-bit IVs, [NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final) limits one key to about 2³² encryptions. That's roughly 43 days at 100 million pages a day. An IV collision allows forged tokens, which could frame someone else.
+- *Was:* `loadTokenKeys` kept only `TOKEN_KEY` and one `TOKEN_KEY_PREVIOUS`, and decode tried each key in turn, so rotating often lost the ability to decode older copies.
+- *Now (2026-11-26):*
+  - Token version 2 carries a 1-byte key ID in a 2-byte header (masked with the IV so tokens still look random, authenticated as additional data). It stays 91 characters: country and colo are packed into 4 bytes, and the inner version byte moved to the header.
+  - The optional `TOKEN_KEYS` secret holds a JSON key ring (`{"3":"<base64>","2":"…"}`). The highest ID seals, every ID decodes, and malformed entries are logged and skipped. A `TOKEN_KEYS_STORE` [Secrets Store](https://developers.cloudflare.com/secrets-store/) binding can replace it, so a rotation needs no redeploy.
+  - Version 1 tokens still decode with `TOKEN_KEY` and `TOKEN_KEY_PREVIOUS`. Without a ring, the Worker keeps sealing version 1.
+  - The beacon, admin decode and the Workflow log `token_retired_key` when a token from a retired key shows up. The [rotation runbook](src/identity/README.md#key-rotation) explains how to read it.
+- *Open:* rotation is manual. See "Key rotation automation" under [Operations and safety](#operations-and-safety).
 
 **M9. Workflow steps weren't idempotent.** ✅ A retry after a failed D1 write re-posted the Discord message, and one failing host redid every lead upsert. Now "notify reviewers" and "save notification ref" are separate steps (and the first skips if a ref exists), and maintenance makes one step per lead host. See [rules of Workflows](https://developers.cloudflare.com/workflows/build/rules-of-workflows/).
 
@@ -116,14 +120,14 @@ Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/m
 | L3 | D1 writes outside Workflows are not retried (D1 retries only reads) | ✅ | `envWithD1WriteRetries` (`src/storage/retry.ts`) wraps `DB` for the admin router and Discord callbacks, per [Retry queries](https://developers.cloudflare.com/d1/best-practices/retry-queries/): writes retry on "Network connection lost", "storage caused object to be reset" and "reset because its code was updated", with jittered exponential backoff, at most 5 attempts; reads pass through. Claims are idempotent: a retry of a committed claim sees `meta.changes` = 0 and reports "already handled" |
 | L4 | `updateCase` built column names from object keys | ✅ | Runtime allowlist |
 | L5 | Beacon events kept the clone visitor's User-Agent, city, ASN, RTT and Ray ID | ✅ | `visitorSafeSignals()` blanks them |
-| L6 | `loadCloudflareRanges` trusted any non-empty API answer | 🟡 | ✅ The live list is unioned with `CLOUDFLARE_IPS_SNAPSHOT` (`unionWithSnapshot`), so a protected range can never be dropped. ⬜ Refresh the snapshot (and its etag) in CI |
+| L6 | `loadCloudflareRanges` trusted any non-empty API answer | ✅ | The live list is unioned with `CLOUDFLARE_IPS_SNAPSHOT` (`unionWithSnapshot`), so a protected range can never be dropped. CI runs `scripts/check-ip-snapshot.mjs`, which warns when the snapshot differs from the live list and prints a replacement with the new etag. The quarterly scheduled run fails instead, so GitHub notifies the owner. The refresh itself is a manual paste |
 | L7 | Discord's failure message said "Nothing was changed" | ✅ | It now says which actions roll back and how to check |
 | L8 | `/maintenance/run` instance IDs could collide within a millisecond | ✅ | Random suffix |
 | L9 | Dead code: `setFlagListItem` and the `flags.list_item_id` column are never written | ✅ | `setFlagListItem` was removed (T8). The column stays (documented as legacy on `FlagRow`); list items are looked up by IP |
-| L10 | Production `CANONICAL_HOSTS` includes `localhost,127.0.0.1`, and the beacon script embeds them | ⬜ | Move local hosts to a [Wrangler environment](https://developers.cloudflare.com/workers/wrangler/environments/) used by `wrangler dev`, or to a dev-only var |
+| L10 | Production `CANONICAL_HOSTS` includes `localhost,127.0.0.1`, and the beacon script embeds them | ✅ | Local hosts moved to `env.dev` ([Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/)), which `npm run dev` uses. Environments don't inherit bindings, so `env.dev` repeats them, and `scripts/check-config.mjs` (in `npm run lint`) fails if it drifts or if production lists a local host. `env.dev` has no routes, so it can't take the production hostname. Not in `.dev.vars`: `--secrets-file` would upload it as a secret, and a name can't be both a var and a secret |
 | L11 | Discord User-Agent said `0.2` while `package.json` says `0.1.0` | ✅ | Both say `0.1.0`. Bump them together with each tag |
-| L12 | No `no-floating-promises` lint, which the best practices recommend | ⬜ | Add [`@typescript-eslint/no-floating-promises`](https://typescript-eslint.io/rules/no-floating-promises/) or [oxlint's rule](https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html) and run it in CI |
-| L13 | No CI, and no staging environment | ⬜ | GitHub Actions or [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) running typecheck, tests and lint; an `env.staging` with its own keys and resources ([environments](https://developers.cloudflare.com/workers/wrangler/environments/)) |
+| L12 | No `no-floating-promises` lint, which the best practices recommend | ✅ | `npm run lint`: oxlint with [`typescript/no-floating-promises`](https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html) (`ignoreVoid: false`, since `void` doesn't keep a Worker alive), `no-misused-promises` and `await-thenable`, type-aware through `oxlint-tsgolint`. `src/` and `test/` had no findings (`writeEvent`'s `writeDataPoint` returns `void`). CI runs it |
+| L13 | No CI, and no staging environment | 🟡 | ✅ `.github/workflows/ci.yml` runs `npm ci`, typecheck, tests and lint on pushes to `main` and on pull requests (actions pinned by commit SHA, read-only token). ⬜ An `env.staging` with its own keys and resources ([environments](https://developers.cloudflare.com/workers/wrangler/environments/)) |
 | L14 | No end-to-end Workflow tests | ✅ | `test/investigate.test.ts` and `test/maintenance.test.ts` drive `InvestigateWorkflow` and `MaintenanceWorkflow` with the Vitest [Workflows test APIs](https://developers.cloudflare.com/workers/testing/vitest-integration/test-apis/#workflows) |
 | L15 | Discord clicks run in [`ctx.waitUntil`](https://developers.cloudflare.com/workers/runtime-apis/context/) (30 s after the response) | 🟡 | Request-path WAF calls now cap at 8 s. If flag approvals grow, run them in a Workflow and post the result |
 | L16 | `report.md` included attacker-influenced strings (PTR names, AS organization, registrar) unescaped | ✅ | `escapeMd()` for every untrusted value in the Markdown (the copy's URL, User-Agent, DNS answers, URL Scanner and Intel fields) |
@@ -160,7 +164,7 @@ The test also surfaced the findings below. The bypass list combines what the tes
 
 | ID | Finding | Status |
 |---|---|---|
-| T1 | The deployed Worker was 3 commits behind `main`, with migration `0003` unapplied (favicons returned 404, old robots.txt logic) | ✅ deployed; ⬜ drift check |
+| T1 | The deployed Worker was 3 commits behind `main`, with migration `0003` unapplied (favicons returned 404, old robots.txt logic) | ✅ deployed; ✅ drift check (`npm run doctor`) |
 | T2 | `hotlink` events stored the clone visitor's IP, User-Agent, JA4 and city, contradicting the beacon-privacy rule (the same innocent people) | ✅ `scrubVisitorSignals()` for hotlinks too |
 | T3 | Once a host's lead was approved, a re-scrape from a new IP (new token) only added a hit: no notification, and `token_ray` kept the first value | ✅ lead re-opens on a new scraper IP (24 h cooldown) |
 | T4 | Live-proxy cases had empty enrichment (UA `n/a`, no `CF-Worker` zone): the token is minted during the capture and Analytics Engine lags about a minute. "Live proxy" wasn't flagged | ✅ 90 s ingestion wait for fresh tokens; live-proxy marker; zone in report and abuse draft |
@@ -191,7 +195,7 @@ The test also surfaced the findings below. The bypass list combines what the tes
 
 ### Open items, with designs
 
-**T1 Deploy drift check.** Add a `npm run doctor` (or CI step) that compares `npx wrangler deployments list --json` (latest version's `created_on`) with the last commit time, and fails on `npx wrangler d1 migrations list DB --remote` listing pending migrations. Run it before live tests and in [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).
+**T1 Deploy drift check.** ✅ `npm run doctor` (`scripts/doctor.mjs`) compares the newest code deployment from `npx wrangler deployments list --json` with the last commit on `main` that changes what gets deployed, and fails on a rollback or when `npx wrangler d1 migrations list DB --remote` lists pending migrations. Secret-change deployments are skipped, because they keep the deployed code. Still open: run it in [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) or a scheduled CI job, which needs a read-only API token as a CI secret.
 
 **B1/B2 Diff- and signature-resistant carriers.**
 - Deterministic per-visitor tokens (already an Idea under *Detection quality*) make a two-fetch diff show nothing.
@@ -255,7 +259,7 @@ It touches every enforcement path, so it needs its own change with tests for eac
    - [HTMLRewriter](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) adds CPU per page.
    - The flag lookup is one D1 read per non-static request. For GET it runs in parallel with the origin fetch; for POST it runs first and adds latency (M7). Enable [read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/) first (M6).
    - Measure under load before launch.
-5. **Key management.** Anyone holding `TOKEN_KEY` can forge tokens and frame others. Use separate keys per environment, a documented rotation (`TOKEN_KEY_PREVIOUS`, and a key ring per M8), and least-privilege access to secrets (for example [Secrets Store](https://developers.cloudflare.com/secrets-store/)).
+5. **Key management.** Anyone holding a token key can forge tokens and frame others. Use separate keys per environment, the `TOKEN_KEYS` ring with the [rotation runbook](src/identity/README.md#key-rotation) (M8), and least-privilege access to secrets (for example the `TOKEN_KEYS_STORE` [Secrets Store](https://developers.cloudflare.com/secrets-store/) binding).
 6. **Detectability.**
    - Fetching twice and diffing reveals the token.
    - The beacon script is a visible extra request.
@@ -268,7 +272,7 @@ It touches every enforcement path, so it needs its own change with tests for eac
 9. **Abuse reports are legal statements.** DMCA reports are made under penalty of perjury. Keep `ABUSE_REPORTS="draft"` unless a responsible person reviews every submission. The API path segment (`report_param`) is the report type, the same value as `act`, as the [Abuse Reports API](https://developers.cloudflare.com/api/resources/abuse_reports/methods/create/) documents.
 10. **Layering expectations.** Account-level rules on this zone already block many scrapers before they reach the honeypot: unwanted User-Agents such as python, undici and scrapy, Workers from other zones, and managed IP lists. The honeypot only sees what gets past the [WAF](https://developers.cloudflare.com/waf/). That is intended, but it means trap and decoy numbers are not a scraping census.
 11. **Config hygiene.**
-    - `CANONICAL_HOSTS` must list every legitimate host (www, staging, preview URLs), or your own environments will file leads. Keep `localhost` out of production (L10).
+    - `CANONICAL_HOSTS` must list every legitimate host (www, staging, preview URLs), or your own environments will file leads. Local hosts belong in `env.dev` only (L10); `npm run lint` fails if production lists one.
     - Tune the trap's [bot score](https://developers.cloudflare.com/bots/concepts/bot-score/) threshold (30) per site.
     - Keep the Discord [WAF skip rules](https://developers.cloudflare.com/waf/custom-rules/skip/) scoped to Discord's ASN and User-Agent.
 
@@ -286,9 +290,9 @@ It touches every enforcement path, so it needs its own change with tests for eac
 - **More notifier adapters.** Slack ([Block Kit, signing-secret verification](https://docs.slack.dev/authentication/verifying-requests-from-slack)) and Telegram ([inline keyboards, `secret_token` webhooks](https://core.telegram.org/bots/api)) behind the existing `Notifier` interface. A [design sketch is in src/notify/README.md](src/notify/README.md#using-another-channel-slack-telegram-).
 - **Discord upgrades.** Slash commands (`/honeypot leads`), a thread per case, and reminders before a case expires.
 - **Rule-based auto-approval (opt-in).** A policy engine for narrow, well-understood cases, for example a trap hit with Bot Management score < 5 from a hosting ASN. Every auto-approval would be logged and reversible.
-- **Key rotation automation.** Scheduled `TOKEN_KEY` rotation with a key ring (M8), keeping N previous keys, with an alert when a retired key's tokens show up.
+- **Key rotation automation.** The key ring, key IDs and retired-key logs exist (M8). Still to do: a scheduled job that adds a new `TOKEN_KEYS_STORE` entry each month through the [Secrets Store API](https://developers.cloudflare.com/api/resources/secrets_store/), and an alert (a Workers Logs alert, or a Discord message) on `token_retired_key` events whose `newestIssuedAt` is later than that key's retirement.
 - **Infrastructure as code.** [Terraform](https://developers.cloudflare.com/terraform/) for the WAF list, block rule, Discord skip rules and Worker. They're currently created through the API by hand.
-- **Staging and CI.** An `env.staging` ([Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/)) with its own keys and resources; GitHub Actions or [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) for typecheck, tests and lint (L12, L13); Dependabot or Renovate; [gradual deployments](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/) for risky changes.
+- **Staging and CI.** An `env.staging` ([Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/)) with its own keys and resources; GitHub Actions for typecheck, tests and lint is done (L12, L13); Dependabot or Renovate; [gradual deployments](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/) for risky changes.
 
 ### Privacy and cost
 - **Selective tokenization.** Modes `all` / `suspicious` ([bot score](https://developers.cloudflare.com/bots/concepts/bot-score/) < N, or no [JavaScript detection](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/javascript-detections/)) / `sampled`. These lower CPU use and keep normal visitors' HTML cacheable.

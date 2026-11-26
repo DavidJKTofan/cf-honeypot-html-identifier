@@ -15,7 +15,7 @@ import { writeEvent } from "./storage/analytics";
 import { collectSignals, isVerifiedBot } from "./identity/fingerprint";
 import { decoyResponse, flagIndicators, handleTrap, noteForeignReferer, robotsResponse, tarpit } from "./honeypot/trap";
 import { activeFlagAction } from "./storage/d1";
-import { importTokenKey, sealToken } from "./identity/token";
+import { loadSealingKey, sealToken } from "./identity/token";
 import { errorMessage, isHtmlResponse, isStaticAsset, log } from "./core/util";
 
 export { InvestigateWorkflow } from "./workflows/investigate";
@@ -75,7 +75,7 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	// 206: a byte range of the page. Rewriting it would corrupt the range (and mint a token nobody sees).
 	if (!isHtmlResponse(response) || response.status === 206) return response;
 
-	const token = await sealToken(s, await importTokenKey(env.TOKEN_KEY));
+	const token = await sealToken(s, await loadSealingKey(env));
 	writeEvent(env, "page", s);
 	return injectCarriers(response, { token, cfg, origin: url.origin });
 }

@@ -12,6 +12,11 @@ export default defineConfig({
 				bindings: {
 					// Test-only values (never used outside tests).
 					TOKEN_KEY: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+					// A key ring, so the end-to-end tests seal version 2 tokens (ID 2 seals, ID 1 is retired).
+					TOKEN_KEYS: JSON.stringify({
+						"2": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+						"1": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=",
+					}),
 					ADMIN_TOKEN: "test-admin-token",
 					TARPIT_MS: "0",
 					TEST_MIGRATIONS: await readD1Migrations(path.join(import.meta.dirname, "migrations")),

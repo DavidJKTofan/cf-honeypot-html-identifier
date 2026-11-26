@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { beaconScript } from "../src/honeypot/beacon";
 import { decodeCharRefs, injectCarriers, scanHtml } from "../src/identity/carriers";
 import { loadConfig, type Config } from "../src/core/config";
-import { importTokenKey, sealToken, tokenToBytes } from "../src/identity/token";
+import { loadSealingKey, sealToken, tokenToBytes } from "../src/identity/token";
 import { decodeZeroWidth, encodeZeroWidth, findZeroWidthTokens } from "../src/identity/zerowidth";
 
 const PAGE = `<!doctype html><html><head><title>t</title></head><body>
@@ -16,7 +16,7 @@ function cfg(carriers: string): Config {
 async function token(): Promise<string> {
 	return sealToken(
 		{ issuedAt: 1, ip: "192.0.2.1", asn: 1, country: "US", colo: "SJC", botScore: null, verifiedBot: false, jsDetectionPassed: false, botManagement: false, rayId: "0123456789abcdef" },
-		await importTokenKey(env.TOKEN_KEY),
+		await loadSealingKey(env),
 	);
 }
 

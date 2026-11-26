@@ -297,7 +297,7 @@ Availability and limits depend on your plan. Check [Cloudflare plans](https://ww
 | [Custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) or [route](https://developers.cloudflare.com/workers/configuration/routing/routes/) | Puts the Worker on your hostname, behind your zone's WAF and Bot Management. The zone must be on Cloudflare, and the route must cover `/robots.txt` and every path in [Configuration](#configuration-vars) |
 | [HTMLRewriter](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) | Streams the carriers into HTML without buffering, and extracts them from copies (built into Workers) |
 | [Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/) | AES-256-GCM tokens, Ed25519 Discord signatures, constant-time compares, randomness (built into Workers) |
-| [Secrets](https://developers.cloudflare.com/workers/configuration/secrets/) | `TOKEN_KEY`, `ADMIN_TOKEN`, account and Discord IDs, API and bot tokens |
+| [Secrets](https://developers.cloudflare.com/workers/configuration/secrets/) | `TOKEN_KEY`, the optional `TOKEN_KEYS` key ring, `ADMIN_TOKEN`, account and Discord IDs, API and bot tokens. The ring can live in [Secrets Store](https://developers.cloudflare.com/secrets-store/) instead ([key rotation](src/identity/README.md#key-rotation)) |
 | [D1](https://developers.cloudflare.com/d1/) with [read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/) | Flags, leads, cases and decoded tokens. One indexed read per HTML request through the Sessions API. Turn on read replication; it's off by default |
 | [Workers Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/) | One data point per tokenized page and honeypot event (User-Agent, JA4, path…), kept 3 months, indexed by Ray ID |
 | [Analytics SQL Workers binding](https://developers.cloudflare.com/analytics/sql-api/workers-binding/) | Reads Analytics Engine from the Worker (Ray ID enrichment, daily hotlink leads) without an API token. Remote only, so tests skip it |
@@ -363,7 +363,7 @@ npm install
 cp .dev.vars.example .dev.vars
 ```
 
-Fill in `TOKEN_KEY` (generate it with `openssl rand -base64 32`) and `ADMIN_TOKEN`. Also fill in the account-specific IDs (`ACCOUNT_ID`, `WAF_LIST_ID`, `DISCORD_*`). They are uploaded as [**secrets**](https://developers.cloudflare.com/workers/configuration/secrets/), so they never appear in the repo.
+Fill in `TOKEN_KEY` (generate it with `openssl rand -base64 32`) and `ADMIN_TOKEN`. In production, also set the `TOKEN_KEYS` key ring and rotate it on a schedule ([key rotation](src/identity/README.md#key-rotation)). Also fill in the account-specific IDs (`ACCOUNT_ID`, `WAF_LIST_ID`, `DISCORD_*`). They are uploaded as [**secrets**](https://developers.cloudflare.com/workers/configuration/secrets/), so they never appear in the repo.
 
 ```bash
 cp .env.example .env
@@ -378,6 +378,18 @@ Set `CLOUDFLARE_ACCOUNT_ID` in `.env`. Wrangler reads it from there ([system env
 ```bash
 npm test
 ```
+
+```bash
+npm run typecheck
+```
+
+```bash
+npm run lint
+```
+
+Tests run offline in workerd. Lint runs [oxlint](https://oxc.rs/docs/guide/usage/linter.html)'s type-aware promise rules: the [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/#always-await-or-waituntil-your-promises) ask for every promise to be awaited, returned or passed to `ctx.waitUntil()`. It also checks that production `CANONICAL_HOSTS` lists no local host. [CI](.github/workflows/ci.yml) runs all three on every pull request.
+
+For local development, `npm run dev` runs `wrangler dev --env dev`. The `dev` [environment](https://developers.cloudflare.com/workers/wrangler/environments/) in `wrangler.jsonc` adds `localhost` and `127.0.0.1` to `CANONICAL_HOSTS`. The top level, which `npm run deploy` uses, never lists them, because the beacon script embeds that list in every page. Environments don't inherit bindings or vars, so `env.dev` repeats them: change both (`npm run lint` fails if they drift). Apply the schema locally first with `npm run db:migrate:local`.
 
 First deploy (this [provisions](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning) D1 and R2 and uploads every secret in `.dev.vars`):
 
@@ -404,6 +416,14 @@ Later deploys apply new migrations first, then deploy:
 ```bash
 npm run deploy
 ```
+
+Before a live test, check that production matches `main`:
+
+```bash
+npm run doctor
+```
+
+It fails if the deployed code is older than the last commit on `main` that changes what gets deployed (deployments made by `wrangler secret put` don't count), if production was rolled back, or if the remote database has unapplied migrations.
 
 ### Optional: Cloudflare API integrations and WAF blocking
 
@@ -518,7 +538,7 @@ The CLI reads the service token from `.env` (`HP_ACCESS_CLIENT_ID`, `HP_ACCESS_C
 
 | Var | Default | Purpose |
 |---|---|---|
-| `CANONICAL_HOSTS` | `honeypot.automatic-demo.com,…` | hosts where the site legitimately runs; anything else is a clone |
+| `CANONICAL_HOSTS` | `honeypot.automatic-demo.com` | hosts where the site legitimately runs; anything else is a clone. Keep local hosts out (the beacon script embeds the list): `env.dev` adds them for `npm run dev` |
 | `CARRIERS` | `meta,trap,beacon` | which carriers to inject (`zw`, `form` are opt-in) |
 | `META_NAME` · `FORM_FIELD` | `csrf-token` · `_csrf` | names used by the `meta` and `form` carriers. If the page already has a field with that name, the identifier uses a fallback name instead |
 | `TRAP_PATH` · `BEACON_PATH` · `BEACON_SCRIPT_PATH` · `ADMIN_PREFIX` | see `wrangler.jsonc` | public-looking paths |
@@ -530,7 +550,7 @@ The CLI reads the service token from `.env` (`HP_ACCESS_CLIENT_ID`, `HP_ACCESS_C
 | `NOTIFY_CHANNEL` · `DISCORD_INTERACTIONS_PATH` · `DISCORD_API_BASE` | `discord` · `/integrations/discord/interactions` · `https://discord.com/api/v10` | approval channel ([notify README](src/notify/README.md)). Discord IDs are **secrets**. Tests point `DISCORD_API_BASE` at an unreachable address |
 | `ABUSE_REPORTS` · `ABUSE_REPORT_TYPE` | `draft` · `abuse_dmca` | Cloudflare abuse reports: draft only, or allow explicit submission |
 
-Secrets (`TOKEN_KEY`, `ADMIN_TOKEN`, account and Discord IDs, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, API and bot tokens) are listed in [`.dev.vars.example`](.dev.vars.example) and typed in [`src/env.d.ts`](src/env.d.ts).
+Secrets (`TOKEN_KEY`, `TOKEN_KEYS`, `ADMIN_TOKEN`, account and Discord IDs, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, API and bot tokens) are listed in [`.dev.vars.example`](.dev.vars.example) and typed in [`src/env.d.ts`](src/env.d.ts).
 
 ## Defense in depth (do this first)
 
@@ -563,7 +583,7 @@ Then tune for scraping with Bot Management and AI Crawl Control, and add this Wo
 - **Cloaking:** a clone can serve a token-free page to the investigator. The capture no longer announces itself in its User-Agent, but a Worker fetch always carries `CF-Worker` and comes from Cloudflare's network. If the beacon still reports a token, the case continues as *unconfirmed*; otherwise it closes as `no_evidence`.
 - **Attribution can be laundered:** a scraper that fetches through residential proxies, a Cloudflare Worker (never blocked by design), a translator or an archive gets someone else's IP into the token. A scraper can also present any genuine token it obtained. Proof of *copying* holds; the IP is a lead.
 - **IPv6 rotation:** flags and blocks are single addresses, while one IPv6 `/64` holds 2⁶⁴ of them. `/64` support is on the [roadmap](ROADMAP.md#live-test-findings-and-scraper-bypasses-2026-11-25).
-- **Token key volume:** AES-GCM with random 96-bit IVs should seal at most about 2³² tokens per key ([NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final)), roughly 43 days at 100 million pages a day. Rotate `TOKEN_KEY` well before that. Today only one previous key is kept for decoding, so a key ring is on the [roadmap](ROADMAP.md#code-review-findings-2026-11-24).
+- **Token key volume:** AES-GCM with random 96-bit IVs should seal at most about 2³² tokens per key ([NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final)), roughly 43 days at 100 million pages a day. Use the `TOKEN_KEYS` key ring and rotate well before that (monthly is safe up to about 100 million pages a day). Version 2 tokens carry a key ID, so every key kept in the ring still decodes its copies, and tokens sealed with a retired key are logged. Rotation is manual for now; the steps are in the [key rotation runbook](src/identity/README.md#key-rotation). Without a ring, only `TOKEN_KEY` and one `TOKEN_KEY_PREVIOUS` decode.
 - **Large copies:** captures keep the first 2 MiB; the report says when a page was truncated, and the hash covers what was captured.
 - **False positives:**
   - Shared or proxy IPs make IP-based decoys and blocks blunt instruments.

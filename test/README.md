@@ -6,7 +6,7 @@ The tests run inside `workerd` through [`@cloudflare/vitest-plugin`](https://dev
 
 | File | Covers |
 |---|---|
-| `token.test.ts` | Seal and open, fixed length, tampered or wrong key, key rotation, IPv4/IPv6 packing |
+| `token.test.ts` | Version 1 and 2 seal and open, the 91-character length invariant, tampering (header, IV, ciphertext, tag), unknown key IDs, rotation across three `TOKEN_KEYS` entries, malformed rings, the Secrets Store binding, retired-key warnings, IPv4/IPv6 packing |
 | `carriers.test.ts` | Injection and extraction for every carrier, renamed meta tags, a `<head>` without `</head>`, zero-width text, cache headers, beacon obfuscation; entity-encoded and whitespace-padded tokens (`decodeCharRefs`); junk candidates can't hide the real token |
 | `cloudflare.test.ts` | Cloudflare IP range matching (a partial live list never drops a snapshot range); abuse-report draft and submission building (no pre-filled `agree`, Worker zone and live proxy in the evidence) |
 | `discord.test.ts` | Ed25519 verification, PING/PONG, unauthorized clicks, approver flow (deferred update and D1 change, retried after a transient D1 error), message helpers and wording (case vs digest buttons, beacon-only cases, re-scraped leads) |
@@ -22,7 +22,7 @@ The tests run inside `workerd` through [`@cloudflare/vitest-plugin`](https://dev
 | `approvals.test.ts` | Concurrency-safe approvals: concurrent lead approvals start one Workflow, a failed start rolls back, one open case per host (partial unique index), concurrent case decisions deliver one event, an abuse report is submitted once, D1 batch helpers, a lead's override URL must stay on its host, TTL bounds |
 | `waf.test.ts` | `canonicalIp`, Lists API retries, one bulk write per decision, expired-block removal, reconcile (and its D1 cap), block-to-decoy list removal, admin flag validation |
 | `robots.test.ts` | The trap `Disallow` reaches every crawler group (own groups, multi-agent groups, comments, CRLF, missing `*` group, empty file) |
-| `abuse.test.ts` | Beacon bounds (Origin check, per-token and global lead limits), visitor-data scrubbing, trap global limit, form-carrier fallback, capture truncation, error-page previews (`describeErrorPage`) |
+| `abuse.test.ts` | Beacon bounds (Origin check, per-token and global lead limits), visitor-data scrubbing, the retired-key warning on beacons, trap global limit, form-carrier fallback, capture truncation, error-page previews (`describeErrorPage`) |
 | `worker.test.ts` | End to end: tokenized pages, decode, 206 passthrough, static assets, robots.txt, the approval-gated trap and decoy, block fallback, Cloudflare IP protection, beacon leads (forged reports can't use up a host's budget), admin 404 |
 
 ## Usage

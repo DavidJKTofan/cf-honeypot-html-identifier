@@ -104,7 +104,7 @@ paths:
             examples:
               url: { value: { url: "https://suspected-clone.example/page" } }
               token:
-                summary: Synthetic token sealed with the public test key from vitest.config.ts (203.0.113.42, AS64496)
+                summary: Synthetic version 1 token sealed with the public test TOKEN_KEY from vitest.config.ts (203.0.113.42, AS64496)
                 value: { token: "gD-06MhE0H1ckPIIQPhiskbl2WlYC7q7m-grgz6XpxkzAyw77Bazf3E3yvs8S3fDxQS3BeWOEY9QnUiSkVQVljNF0eg" }
       responses:
         "200":
@@ -669,7 +669,7 @@ components:
     Token:
       type: string
       pattern: "^[A-Za-z0-9_-]{91}$"
-      description: AES-256-GCM sealed fingerprint, base64url
+      description: AES-256-GCM sealed fingerprint, base64url. Version 1 (TOKEN_KEY) or version 2 (with a key ID from TOKEN_KEYS); both are 91 characters
     Fingerprint:
       type: object
       description: The fields sealed inside a token
@@ -705,6 +705,9 @@ components:
         valid: { type: boolean }
         fingerprint: { oneOf: [{ $ref: "#/components/schemas/Fingerprint" }, { type: "null" }] }
         issuedAtIso: { type: [string, "null"] }
+        version: { type: [integer, "null"], enum: [1, 2, null], description: "Token format: 1 (TOKEN_KEY, no key ID) or 2 (TOKEN_KEYS key ID); null when invalid" }
+        keyId: { type: [integer, "null"], minimum: 0, maximum: 255, description: The TOKEN_KEYS ID that opened a version 2 token; null for version 1 or invalid }
+        retiredKey: { type: boolean, description: "Sealed with a key that no longer seals new tokens (an older ring ID, any version 1 token once TOKEN_KEYS is set, or TOKEN_KEY_PREVIOUS). Logged as token_retired_key" }
         enrichment: { type: [object, "null"], description: Analytics Engine row for the Ray ID (UA, JA4, path, CF-Worker zone) }
         enrichmentError: { type: string }
     Lead:

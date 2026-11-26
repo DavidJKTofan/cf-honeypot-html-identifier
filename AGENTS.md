@@ -21,9 +21,13 @@ The project is educational and defensive. Keep that framing in code, comments an
 | Types (after any `wrangler.jsonc` change) | `npm run types` (`wrangler types --strict-vars=false`) |
 | Type check | `npm run typecheck` |
 | Tests (local workerd, no network) | `npm test` |
-| Local dev | `npm run dev` (needs `.dev.vars`; Analytics SQL is remote-only) |
+| Lint | `npm run lint` (oxlint type-aware promise rules from `.oxlintrc.json`, then `scripts/check-config.mjs`, which fails if production `CANONICAL_HOSTS` lists a local host or `env.dev` drifts from the top level) |
+| Local dev | `npm run dev` (`wrangler dev --env dev`; needs `.dev.vars`, and `CLOUDFLARE_ACCOUNT_ID` in `.env` for the remote-only Analytics SQL binding; without an account, `npx wrangler dev --env dev --local`) |
 | Deploy | `npm run deploy` (remote migrations, then `wrangler deploy`). First time: `npx wrangler deploy --secrets-file .dev.vars`, then `npm run db:migrate:remote`, then [enable D1 read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/#enable-read-replication) |
-| D1 migrations | `npm run db:migrate:local`, `npm run db:migrate:remote` |
+| D1 migrations | `npm run db:migrate:local` (the `dev` environment's local database), `npm run db:migrate:remote` |
+| Drift check (before a live test) | `npm run doctor`: fails if production runs code older than the last deployable commit on `main` (or was rolled back), or if remote D1 has unapplied migrations |
+| IP snapshot check | `node scripts/check-ip-snapshot.mjs`: warns if `CLOUDFLARE_IPS_SNAPSHOT` differs from the live list (CI runs it, and quarterly with `--strict`) |
+| CI | `.github/workflows/ci.yml`: `npm ci`, typecheck, tests and lint on pushes to `main` and on pull requests; never deploys |
 | Admin CLI | `npm run hp -- <command>` (endpoints: `src/admin/openapi.yaml`; with Access, needs the service token in `.env`) |
 
 ## File map
@@ -34,7 +38,7 @@ Every folder has a README with setup, usage and references. Start at [`src/READM
 |---|---|
 | `src/index.ts` | Router; `fetch` handler; exports both Workflow classes |
 | `src/core/` | `config.ts` (typed `vars`, parsed per request), `util.ts` (crypto, bounded reads, logs) |
-| `src/identity/` | `fingerprint.ts` (trusted signals), `token.ts` (seal/open), `carriers.ts` (inject/scan), `zerowidth.ts` |
+| `src/identity/` | `fingerprint.ts` (trusted signals), `token.ts` (seal/open, `TOKEN_KEYS` key ring), `carriers.ts` (inject/scan), `zerowidth.ts` |
 | `src/honeypot/` | `trap.ts` (pending flag, decoy, tarpit, robots, hotlinks), `beacon.ts` (script and receiver → pending lead) |
 | `src/storage/` | `d1.ts` (all SQL), `retry.ts` (D1 write retries for the admin API and Discord callbacks), `analytics.ts` (WAE writes, Analytics SQL reads) |
 | `src/approvals/` | `actions.ts` (**the only human-approved actions**, shared by every channel), `cases.ts`, `enforce.ts` (Cloudflare-IP protection, WAF sync), `leads.ts`, `digest.ts` (pending-flag digest with open-case context) |
@@ -44,7 +48,8 @@ Every folder has a README with setup, usage and references. Start at [`src/READM
 | `src/workflows/` | `investigate.ts`, `maintenance.ts`, `report.ts`, `evidence.ts` (pure helpers: live-mirror detection, ingestion wait, decision targets), `types.ts` |
 | `migrations/` | `0001_init.sql`, `0002_notifications_abuse.sql`, `0003_approval_guards.sql` (one open case per host, purge index), `0004_lead_tokens.sql` (beacon token, scraper IP and re-open time on leads) |
 | `public/` | Fictional demo site (Static Assets, `run_worker_first: true`; `.assetsignore` keeps READMEs out) |
-| `scripts/hp.mjs` | Admin CLI |
+| `scripts/` | `hp.mjs` (admin CLI), `doctor.mjs` (deploy drift check), `check-config.mjs` (`wrangler.jsonc` guard, part of lint), `check-ip-snapshot.mjs` |
+| `.github/workflows/ci.yml` | CI: typecheck, tests, lint; Cloudflare IP snapshot check |
 | `DEMO.md`, `demo/` | Customer demo script; demo kit (`scrape.sh`, a clone Worker with a `/live/*` proxy, `screenshots/`). `demo/clone/site/` is gitignored (scraped tokens) |
 | `test/` | `@cloudflare/vitest-plugin` tests (token, carriers, Cloudflare, Discord, routes, approvals concurrency, abuse bounds, abuse-report reset, D1 write retries, evidence, leads, hotlinks, WAF, and end-to-end `InvestigateWorkflow` and `MaintenanceWorkflow` runs) |
 
@@ -70,6 +75,7 @@ Dependencies point inward: `admin`, `notify`, `workflows` → `approvals` → `s
 - **Admin auth.** With `ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` set, only a verified Cloudflare Access JWT authenticates `ADMIN_PREFIX` (bearer ignored; actor = Access identity). Without them, the bearer token. Unauthenticated → plain `404`. Only `ADMIN_PREFIX` sits behind Access; the beacon, trap and Discord endpoint stay public. Setup: `src/admin/README.md#cloudflare-access`.
 - **The OpenAPI spec is the admin contract.** Add or change a route → update `src/admin/openapi.yaml` (and the endpoint table in [README, Admin API and CLI](README.md#admin-api-and-cli)); `test/openapi.test.ts` fails if a documented operation isn't routed.
 - **Notifier callbacks must verify signatures** (Discord: Ed25519 with ±5 min skew), check an **approver allowlist**, ACK within the platform deadline, and render untrusted values as inline code with mentions disabled.
+- **Tokens stay 91 characters, and old tokens keep decoding.** Every token version seals to `SEALED_LENGTH` (68) bytes; carriers, `scanHtml`, the beacon's regex and the zero-width carrier depend on it (`test/token.test.ts` checks). Version 1 tokens decode with `TOKEN_KEY`, then `TOKEN_KEY_PREVIOUS`; version 2 with the `TOKEN_KEYS` entry its header names. The highest ring ID seals. A malformed ring entry is logged and skipped, never fatal, and never logged with key material. Retired-key tokens are logged as `token_retired_key`.
 - **Abuse reports are drafted, never auto-submitted.** Drafts contain no personal data and never pre-fill `agree` or `signature` (`buildSubmission` adds them at submission); submission needs `ABUSE_REPORTS="submit"`, `ABUSE_REPORTER_JSON` and a human click. **A filed report is never reset:** only `resetAbuseReportAction` (admin API) clears a `submitting` claim, only one older than `ABUSE_RESET_MIN_AGE_SEC` (10 min), and only after finding no `abuse-report-result.json` in R2 and no report for the host in the account's submitted reports since the claim. A found report replaces the claim instead. **Beacon-only evidence never gets a draft**: a draft claims the captured page contains our identifier, and a beacon report can be forged.
 - **Beacon-reported tokens are unconfirmed evidence.** When the capture holds no token, the Workflow may use the lead's beacon token (`source: "beacon"`, `beaconOnly`), and the report, Discord message and `report.json` must say "unconfirmed". Never present it as proof the page contains the token.
 - **Hotlinks are subresource loads only** (`Sec-Fetch-Dest` ≠ `document`/`iframe`). A link click from another site is normal traffic, not a clone signal.
@@ -87,7 +93,7 @@ Dependencies point inward: `admin`, `notify`, `workflows` → `approvals` → `s
 - **Evidence capture never fails on size or token count.** `fetchPage` keeps the first 2 MiB and sets `truncated`; the SHA-256 covers exactly the captured bytes. A case keeps at most `MAX_CASE_TOKENS` valid tokens (earliest plus newest; `omittedTokens` counts the rest), because a step result is capped at 1 MiB. Every candidate is still decoded: never cap candidates in document order, or junk values could hide the real token.
 - **Workers best practices:**
   - no module-level mutable state; HTMLRewriter handler state is created per call
-  - no floating promises (`await`, `return`, or `ctx.waitUntil`)
+  - no floating promises (`await`, `return`, or `ctx.waitUntil`; `void` isn't enough). `npm run lint` enforces it
   - streaming bodies, with size caps when reading
   - Web Crypto for randomness; constant-time secret compares
   - structured JSON logs
@@ -95,15 +101,18 @@ Dependencies point inward: `admin`, `notify`, `workflows` → `approvals` → `s
 
 ## Data sources
 
-**Sealed in the token** (`src/token.ts` layout):
+**Sealed in the token** (`src/identity/token.ts` layout; [format and rotation](src/identity/README.md#key-rotation)):
 
 | Field | Source |
 |---|---|
+| Version, key ID | Version 2 only: a 2-byte header (version `2`, `TOKEN_KEYS` ID 0–255), readable without a key (masked with the IV) and authenticated. Version 1 (`TOKEN_KEY`, no ring) has no key ID |
 | IP | `CF-Connecting-IP` header |
 | Ray ID | `cf-ray` header (first 16 hex characters) |
 | ASN, country, colo | `request.cf.asn`, `request.cf.country`, `request.cf.colo` |
 | Bot score, verified bot, JS detection | `request.cf.botManagement.{score, verifiedBot, jsDetection.passed}` (Enterprise Bot Management only, otherwise null) |
 | issuedAt | Worker clock (unix seconds) |
+
+Every version seals to 68 bytes (91 base64url characters). Version 2 packs country and colo into 4 bytes to make room for the header.
 
 **Written to Workers Analytics Engine**, dataset `honeypot_events`:
 
@@ -160,7 +169,8 @@ Intel and Brand Protection share the monthly Intel quota (2,500 calls on Enterpr
 - **HTMLRewriter calls `onEndTag` only for a literal end tag.** HTML lets pages omit `</head>` (minifiers do), and lol-html builds no tree, so an implied end tag never fires. Anything inserted at `</head>` needs a fallback (`injectCarriers` uses `<body>`, then the document end).
 - **Workflow tests: `mockStepResult(step, null)` still runs the real step.** Mock a void step with any non-null value to skip it (`test/investigate.test.ts`).
 - **Zone WAF rules see admin and beacon traffic.** An attack-score rule challenged `POST /__hp/decode` even with `html_b64` (`cf-mitigated: challenge`; the CLI reports it). A "pretend browser" rule matches every beacon (`sendBeacon` from a clone visitor's browser): keep such rules at *Log*, or exclude `BEACON_PATH`.
-- **The deployed Worker can drift from `main`.** The live test found the demo three commits behind, with a migration unapplied. Check `npx wrangler deployments list` and `npx wrangler d1 migrations list DB --remote` before testing live.
+- **The deployed Worker can drift from `main`.** The live test found the demo three commits behind, with a migration unapplied. Run `npm run doctor` before testing live. It skips deployments made by `wrangler secret put` (they keep the deployed code) and ignores docs-only commits.
+- **Wrangler environments don't inherit vars, secrets or bindings.** `env.dev` repeats the top level; change both, and `npm run lint` (`scripts/check-config.mjs`) fails on drift. The top level is production: `npm run deploy` and the tests use it. `env.dev` has `"routes": []`, so `wrangler dev` keeps the real `localhost` URL instead of [inferring the origin from the custom domain](https://developers.cloudflare.com/workers/wrangler/commands/workers/#dev), and a stray `wrangler deploy --env dev` can't take the production hostname.
 - **Analytics SQL has no local implementation.** Tests set `remoteBindings: false`, and enrichment errors are caught; a noisy "needs to be run remotely" log in tests is expected.
 - **`secrets.required` limits local secrets.** Only the listed secrets load from `.dev.vars`, so the optional `CF_API_TOKEN` must be set remotely with `wrangler secret put`.
 - **The custom domain bypasses nothing.** `workers_dev: false` and `preview_urls: false` mean the zone's WAF and Bot Management always run first.

@@ -1,0 +1,20 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	// Promise safety only (ROADMAP L12), as the Workers best practices recommend:
+	// https://developers.cloudflare.com/workers/best-practices/workers-best-practices/#always-await-or-waituntil-your-promises
+	// Type-aware rules run through oxlint-tsgolint and the project's tsconfig.json.
+	"options": { "typeAware": true },
+	"plugins": ["typescript"],
+	"categories": {
+		"correctness": "off"
+	},
+	"rules": {
+		// A promise must be awaited, returned or passed to ctx.waitUntil(). `void promise` is
+		// not enough in a Worker: the runtime may end the invocation before it settles.
+		// writeEvent() is fine: writeDataPoint() returns void, by design not awaited.
+		"typescript/no-floating-promises": ["error", { "ignoreVoid": false }],
+		// An async callback where a void one is expected (forEach, event listeners) floats too.
+		"typescript/no-misused-promises": "error",
+		"typescript/await-thenable": "error"
+	}
+}

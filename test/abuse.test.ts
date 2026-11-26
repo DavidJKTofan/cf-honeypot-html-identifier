@@ -6,14 +6,14 @@
  */
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { describeErrorPage, fetchPage } from "../src/admin/decode";
 import { loadConfig } from "../src/core/config";
 import { sha256Hex } from "../src/core/util";
 import { handleBeacon } from "../src/honeypot/beacon";
 import { handleTrap } from "../src/honeypot/trap";
 import { collectSignals } from "../src/identity/fingerprint";
-import { importTokenKey, sealToken } from "../src/identity/token";
+import { importTokenKey, loadSealingKey, sealToken } from "../src/identity/token";
 
 const BASE = "https://honeypot.automatic-demo.com";
 
@@ -48,7 +48,7 @@ function harness(limits: { beacon?: number; lead?: number; trap?: number; trapGl
 async function tokenFor(rayId: string): Promise<string> {
 	return sealToken(
 		{ issuedAt: 1_700_000_000, ip: "203.0.113.9", asn: 64496, country: "DE", colo: "FRA", botScore: null, verifiedBot: false, jsDetectionPassed: false, botManagement: false, rayId },
-		await importTokenKey(env.TOKEN_KEY),
+		await loadSealingKey(env),
 	);
 }
 
@@ -123,6 +123,27 @@ describe("beacon lead bounds", () => {
 		expect(p?.doubles?.[1]).toBe(0); // ASN
 		expect(p?.doubles?.[3]).toBe(-1); // client TCP RTT
 		expect(p?.blobs?.[19]).toBe("dddddddddddd0001"); // note = token Ray ID (the scraper's request, not the visitor's)
+	});
+
+	it("accepts a token sealed with a retired key and logs a warning without visitor data", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const h = harness();
+			// ID 1 of the test ring in vitest.config.ts; ID 2 seals new tokens.
+			const retiredKey = await importTokenKey("QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=");
+			const t = await sealToken(
+				{ issuedAt: 1_700_000_000, ip: "203.0.113.9", asn: 64496, country: "DE", colo: "FRA", botScore: null, verifiedBot: false, jsDetectionPassed: false, botManagement: false, rayId: "eeeeeeeeeeee0001" },
+				{ key: retiredKey, keyId: 1 },
+			);
+			await beacon(h, { t, u: "https://retired-key.example/" }, { "cf-ray": "0123456789abcdef-FRA" });
+			expect(await leadCount("host = ?", "retired-key.example")).toBe(1);
+			const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("token_retired_key"));
+			expect(lines).toHaveLength(1);
+			expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({ source: "beacon", tokenVersion: 2, keyId: 1, currentKeyId: 2, newestRayId: "eeeeeeeeeeee0001" });
+			for (const visitor of ["192.0.2.77", "VisitorBrowser", "0123456789abcdef"]) expect(lines[0]).not.toContain(visitor);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 

@@ -10,7 +10,7 @@ import { writeEvent } from "../storage/analytics";
 import { isVerifiedBot, scrubVisitorSignals, type RequestSignals } from "../identity/fingerprint";
 import { isCloudflareIp, loadCloudflareRanges } from "../integrations/cloudflare/ip-ranges";
 import { indicatorFor, recordPendingFlag } from "../storage/d1";
-import { importTokenKey, sealToken } from "../identity/token";
+import { loadSealingKey, sealToken } from "../identity/token";
 import { BodyTooLargeError, errorMessage, hostMatchesSuffix, log, randomInt, readStreamLimited } from "../core/util";
 
 /** Indicators checked on every non-static request. */
@@ -48,7 +48,7 @@ function decoyHtml(): string {
 
 /** Decoy response. Still carries a fresh token, so a republished decoy is attributable too. */
 export async function decoyResponse(env: Env, cfg: Config, s: RequestSignals, origin: string): Promise<Response> {
-	const token = await sealToken(s, await importTokenKey(env.TOKEN_KEY));
+	const token = await sealToken(s, await loadSealingKey(env));
 	if (s.path.startsWith("/api/")) {
 		return Response.json(
 			{
