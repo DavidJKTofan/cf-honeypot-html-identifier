@@ -379,6 +379,18 @@ Set `CLOUDFLARE_ACCOUNT_ID` in `.env`. Wrangler reads it from there ([system env
 npm test
 ```
 
+```bash
+npm run typecheck
+```
+
+```bash
+npm run lint
+```
+
+Tests run offline in workerd. Lint runs [oxlint](https://oxc.rs/docs/guide/usage/linter.html)'s type-aware promise rules: the [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/#always-await-or-waituntil-your-promises) ask for every promise to be awaited, returned or passed to `ctx.waitUntil()`. It also checks that production `CANONICAL_HOSTS` lists no local host. [CI](.github/workflows/ci.yml) runs all three on every pull request.
+
+For local development, `npm run dev` runs `wrangler dev --env dev`. The `dev` [environment](https://developers.cloudflare.com/workers/wrangler/environments/) in `wrangler.jsonc` adds `localhost` and `127.0.0.1` to `CANONICAL_HOSTS`. The top level, which `npm run deploy` uses, never lists them, because the beacon script embeds that list in every page. Environments don't inherit bindings or vars, so `env.dev` repeats them: change both (`npm run lint` fails if they drift). Apply the schema locally first with `npm run db:migrate:local`.
+
 First deploy (this [provisions](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning) D1 and R2 and uploads every secret in `.dev.vars`):
 
 ```bash
@@ -404,6 +416,14 @@ Later deploys apply new migrations first, then deploy:
 ```bash
 npm run deploy
 ```
+
+Before a live test, check that production matches `main`:
+
+```bash
+npm run doctor
+```
+
+It fails if the deployed code is older than the last commit on `main` that changes what gets deployed (deployments made by `wrangler secret put` don't count), if production was rolled back, or if the remote database has unapplied migrations.
 
 ### Optional: Cloudflare API integrations and WAF blocking
 
@@ -517,7 +537,7 @@ The CLI reads the service token from `.env` (`HP_ACCESS_CLIENT_ID`, `HP_ACCESS_C
 
 | Var | Default | Purpose |
 |---|---|---|
-| `CANONICAL_HOSTS` | `honeypot.automatic-demo.com,…` | hosts where the site legitimately runs; anything else is a clone |
+| `CANONICAL_HOSTS` | `honeypot.automatic-demo.com` | hosts where the site legitimately runs; anything else is a clone. Keep local hosts out (the beacon script embeds the list): `env.dev` adds them for `npm run dev` |
 | `CARRIERS` | `meta,trap,beacon` | which carriers to inject (`zw`, `form` are opt-in) |
 | `META_NAME` · `FORM_FIELD` | `csrf-token` · `_csrf` | names used by the `meta` and `form` carriers. If the page already has a field with that name, the identifier uses a fallback name instead |
 | `TRAP_PATH` · `BEACON_PATH` · `BEACON_SCRIPT_PATH` · `ADMIN_PREFIX` | see `wrangler.jsonc` | public-looking paths |

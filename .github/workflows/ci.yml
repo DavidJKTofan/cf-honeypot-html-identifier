@@ -1,0 +1,55 @@
+# Typecheck, tests and lint on every push to main and every pull request (ROADMAP L12, L13),
+# plus a check that the bundled Cloudflare IP snapshot is current (ROADMAP L6).
+# Nothing here deploys or needs Cloudflare credentials: tests run offline in workerd.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly IP snapshot check, so a stale snapshot surfaces without a commit.
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck, test, lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+      # package.json "allowScripts" approves the workerd and esbuild install scripts.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run lint
+
+  ip-snapshot:
+    name: Cloudflare IP snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      # No dependencies needed. A difference is a warning on pushes and pull requests; the weekly
+      # run fails instead, so GitHub notifies the repository owner.
+      - run: node scripts/check-ip-snapshot.mjs ${{ github.event_name == 'schedule' && '--strict' || '' }}

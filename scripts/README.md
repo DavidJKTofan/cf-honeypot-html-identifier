@@ -1,6 +1,6 @@
-# `scripts/`: admin CLI
+# `scripts/`: admin CLI and checks
 
-`hp.mjs` is a dependency-free Node CLI for the [admin API](../src/admin/README.md).
+`hp.mjs` is a dependency-free Node CLI for the [admin API](../src/admin/README.md). The [checks](#checks) below keep the repository and the deployment honest.
 
 **Setup**
 - **With Cloudflare Access (production):** put the service token in `.env` (gitignored) as `HP_ACCESS_CLIENT_ID` and `HP_ACCESS_CLIENT_SECRET`, or export them. The CLI sends them as `CF-Access-Client-Id` / `CF-Access-Client-Secret`, and Access forwards a JWT the Worker verifies. Don't put them in `.dev.vars`: `wrangler deploy --secrets-file .dev.vars` would upload them as Worker secrets. See [src/admin/README.md](../src/admin/README.md#cloudflare-access).
@@ -43,4 +43,18 @@ npm run hp -- report case-mwurl1pf-982048f6
 
 ```bash
 npm run hp -- decide case-mwurl1pf-982048f6 none
+```
+
+## Checks
+
+| Script | Run with | What it does |
+|---|---|---|
+| `check-config.mjs` | `npm run lint` | Fails if production `CANONICAL_HOSTS` lists `localhost`, `127.0.0.1` or `::1` (the beacon script embeds the list), or if `env.dev` in `wrangler.jsonc` differs from the top level in anything but its name, its routes (none) and its extra local hosts. Uses Wrangler's own config parser; no network |
+| `doctor.mjs` | `npm run doctor` | Deploy drift check before a live test. Fails (exit 1) if production runs code older than the last commit on `main` that changes `src/`, `public/`, `migrations/`, `wrangler.jsonc` or `package*.json`, if production was rolled back, or if `wrangler d1 migrations list DB --remote` lists unapplied migrations. Deployments made by `wrangler secret put` are skipped: they keep the deployed code. Exit 2 means a check couldn't run (not logged in, or `CLOUDFLARE_ACCOUNT_ID` missing from `.env` with several accounts) |
+| `check-ip-snapshot.mjs` | `node scripts/check-ip-snapshot.mjs [--strict]` | Compares `CLOUDFLARE_IPS_SNAPSHOT` with [the live list](https://api.cloudflare.com/client/v4/ips) and prints a replacement when they differ. A warning by default; `--strict` exits 1. CI runs it on every push and pull request, and weekly with `--strict` |
+
+`doctor.mjs` reads `wrangler deployments list --json` ([versions and deployments](https://developers.cloudflare.com/workers/versions-and-deployments/)) and `wrangler d1 migrations list` ([D1 commands](https://developers.cloudflare.com/workers/wrangler/commands/d1/)). It is read-only, except that `migrations list` creates the `d1_migrations` table if it doesn't exist yet.
+
+```bash
+npm run doctor
 ```
