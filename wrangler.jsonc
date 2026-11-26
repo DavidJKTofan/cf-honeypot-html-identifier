@@ -93,7 +93,8 @@
 
 	"vars": {
 		// Hosts where the site legitimately runs. Anything else running our HTML is a clone.
-		"CANONICAL_HOSTS": "honeypot.automatic-demo.com,localhost,127.0.0.1",
+		// The beacon script embeds this list, so keep local hosts out: env.dev below adds them.
+		"CANONICAL_HOSTS": "honeypot.automatic-demo.com",
 		"ADMIN_PREFIX": "/__hp",
 		"TRAP_PATH": "/catalog/full-export",
 		"BEACON_PATH": "/api/rum",
@@ -131,5 +132,73 @@
 	//   account-specific IDs kept out of the repo: ACCOUNT_ID, WAF_LIST_ID,
 	//   DISCORD_APPLICATION_ID, DISCORD_PUBLIC_KEY, DISCORD_CHANNEL_ID, DISCORD_APPROVER_IDS, DISCORD_APPROVER_ROLE_IDS
 	//   credentials: TOKEN_KEY_PREVIOUS, CF_API_TOKEN, DISCORD_BOT_TOKEN, DISCORD_WEBHOOK_URL, ABUSE_REPORTER_JSON
-	"secrets": { "required": ["TOKEN_KEY", "ADMIN_TOKEN"] }
+	"secrets": { "required": ["TOKEN_KEY", "ADMIN_TOKEN"] },
+
+	// Local development only: `npm run dev` (wrangler dev --env dev). Never deploy it.
+	// https://developers.cloudflare.com/workers/wrangler/environments/
+	// Environments don't inherit vars, secrets or bindings, so this block repeats them with one
+	// difference: CANONICAL_HOSTS adds localhost and 127.0.0.1. `npm run lint` runs
+	// scripts/check-config.mjs, which fails if anything else here drifts from the top level.
+	// The top level stays production: `npm run deploy` and the tests use it.
+	"env": {
+		"dev": {
+			// No custom domain: an accidental `wrangler deploy --env dev` can't take over the
+			// production hostname, and local requests keep their localhost URL.
+			"routes": [],
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "honeypot-html-identifier-db",
+					"migrations_dir": "migrations"
+				}
+			],
+			"r2_buckets": [{ "binding": "EVIDENCE", "bucket_name": "honeypot-evidence" }],
+			"analytics_engine_datasets": [{ "binding": "EVENTS", "dataset": "honeypot_events" }],
+			"analytics": { "binding": "ANALYTICS_SQL", "remote": true },
+			"workflows": [
+				{
+					"name": "honeypot-investigate",
+					"binding": "INVESTIGATE",
+					"class_name": "InvestigateWorkflow",
+					"concurrency": { "limit": 5 }
+				},
+				{
+					"name": "honeypot-maintenance",
+					"binding": "MAINTENANCE",
+					"class_name": "MaintenanceWorkflow",
+					"schedules": ["17 3 * * *"]
+				}
+			],
+			"ratelimits": [
+				{ "name": "BEACON_LIMITER", "namespace_id": "4201", "simple": { "limit": 10, "period": 60 } },
+				{ "name": "TRAP_LIMITER", "namespace_id": "4202", "simple": { "limit": 2, "period": 60 } },
+				{ "name": "NOTIFY_LIMITER", "namespace_id": "4203", "simple": { "limit": 20, "period": 60 } },
+				{ "name": "LEAD_LIMITER", "namespace_id": "4204", "simple": { "limit": 30, "period": 60 } },
+				{ "name": "TRAP_GLOBAL_LIMITER", "namespace_id": "4205", "simple": { "limit": 30, "period": 60 } }
+			],
+			"vars": {
+				"CANONICAL_HOSTS": "honeypot.automatic-demo.com,localhost,127.0.0.1",
+				"ADMIN_PREFIX": "/__hp",
+				"TRAP_PATH": "/catalog/full-export",
+				"BEACON_PATH": "/api/rum",
+				"BEACON_SCRIPT_PATH": "/assets/js/rum.js",
+				"CARRIERS": "meta,trap,beacon",
+				"META_NAME": "csrf-token",
+				"FORM_FIELD": "_csrf",
+				"TARPIT_MS": "5000",
+				"FLAG_TTL_DAYS": "7",
+				"PENDING_TTL_DAYS": "14",
+				"REFERER_IGNORE": "google.com,bing.com,duckduckgo.com,yahoo.com,baidu.com,yandex.ru,yandex.com,ecosia.org,facebook.com,t.co,x.com,linkedin.com,reddit.com,slack.com",
+				"URLSCAN_VISIBILITY": "Unlisted",
+				"INTEL_MAX_IPS_PER_CASE": "3",
+				"CAPTURE_USER_AGENT": "",
+				"NOTIFY_CHANNEL": "discord",
+				"DISCORD_INTERACTIONS_PATH": "/integrations/discord/interactions",
+				"DISCORD_API_BASE": "https://discord.com/api/v10",
+				"ABUSE_REPORTS": "draft",
+				"ABUSE_REPORT_TYPE": "abuse_dmca"
+			},
+			"secrets": { "required": ["TOKEN_KEY", "ADMIN_TOKEN"] }
+		}
+	}
 }
