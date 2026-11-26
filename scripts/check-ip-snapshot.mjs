@@ -7,7 +7,7 @@
  * live fetch fails: then a range Cloudflare added since the snapshot isn't protected.
  *
  * Prints a GitHub Actions warning when they differ, with a snapshot ready to paste.
- * Exits 0 unless --strict is given (the weekly CI run uses it, so GitHub sends a notification).
+ * Exits 0 unless --strict is given (the quarterly CI run uses it, so GitHub sends a notification).
  * A failed fetch is a warning, never an error: the check must not depend on the network.
  */
 import { readFile } from "node:fs/promises";

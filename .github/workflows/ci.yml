@@ -1,6 +1,9 @@
 # Typecheck, tests and lint on every push to main and every pull request (ROADMAP L12, L13),
 # plus a check that the bundled Cloudflare IP snapshot is current (ROADMAP L6).
 # Nothing here deploys or needs Cloudflare credentials: tests run offline in workerd.
+# Free: a public repository on standard GitHub-hosted runners (ubuntu-latest), no artifacts, and an
+# npm cache far below the 10 GB included per repository. Larger runners or a private repository
+# would be billed: https://docs.github.com/en/billing/concepts/product-billing/github-actions
 name: CI
 
 on:
@@ -8,8 +11,10 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly IP snapshot check, so a stale snapshot surfaces without a commit.
-    - cron: "23 5 * * 1"
+    # Quarterly IP snapshot check (Jan, Apr, Jul, Oct 1st, 05:23 UTC), so a stale snapshot
+    # surfaces without a commit. GitHub disables schedules in a public repository after 60 days
+    # without activity; re-enable with `gh workflow enable CI`.
+    - cron: "23 5 1 1,4,7,10 *"
   workflow_dispatch:
 
 permissions:
@@ -50,6 +55,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
-      # No dependencies needed. A difference is a warning on pushes and pull requests; the weekly
+      # No dependencies needed. A difference is a warning on pushes and pull requests; the quarterly
       # run fails instead, so GitHub notifies the repository owner.
       - run: node scripts/check-ip-snapshot.mjs ${{ github.event_name == 'schedule' && '--strict' || '' }}

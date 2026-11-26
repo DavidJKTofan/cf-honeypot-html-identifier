@@ -26,7 +26,7 @@ The project is educational and defensive. Keep that framing in code, comments an
 | Deploy | `npm run deploy` (remote migrations, then `wrangler deploy`). First time: `npx wrangler deploy --secrets-file .dev.vars`, then `npm run db:migrate:remote`, then [enable D1 read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/#enable-read-replication) |
 | D1 migrations | `npm run db:migrate:local` (the `dev` environment's local database), `npm run db:migrate:remote` |
 | Drift check (before a live test) | `npm run doctor`: fails if production runs code older than the last deployable commit on `main` (or was rolled back), or if remote D1 has unapplied migrations |
-| IP snapshot check | `node scripts/check-ip-snapshot.mjs`: warns if `CLOUDFLARE_IPS_SNAPSHOT` differs from the live list (CI runs it, and weekly with `--strict`) |
+| IP snapshot check | `node scripts/check-ip-snapshot.mjs`: warns if `CLOUDFLARE_IPS_SNAPSHOT` differs from the live list (CI runs it, and quarterly with `--strict`) |
 | CI | `.github/workflows/ci.yml`: `npm ci`, typecheck, tests and lint on pushes to `main` and on pull requests; never deploys |
 | Admin CLI | `npm run hp -- <command>` (endpoints: `src/admin/openapi.yaml`; with Access, needs the service token in `.env`) |
 
