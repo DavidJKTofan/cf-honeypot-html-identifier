@@ -76,10 +76,10 @@ Access authenticates admin requests at the edge, before the Worker runs, and rep
 3. **Application:** Access controls → Applications → **Self-hosted** → public hostname `<your-host>` with path `__hp`. Add your people policy first, then the service policy. Under advanced settings, turn on **Return 401 response for service auth policies**.
 4. **Worker secrets:** copy the application's **AUD** tag (Overview tab), then:
    ```bash
-   npx wrangler secret put ACCESS_TEAM_DOMAIN
+   npx wrangler secret put ACCESS_TEAM_DOMAIN --env=""
    ```
    ```bash
-   npx wrangler secret put ACCESS_AUD
+   npx wrangler secret put ACCESS_AUD --env=""
    ```
    Then deploy. From now on the bearer token is no longer accepted in production.
 5. **CLI:** put the service token in `.env`, then check:

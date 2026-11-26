@@ -11,7 +11,7 @@
 [Create the token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) yourself (permission names: [API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)) and set it with:
 
 ```bash
-npx wrangler secret put CF_API_TOKEN
+npx wrangler secret put CF_API_TOKEN --env=""
 ```
 
 | Feature | Permission |
@@ -45,7 +45,7 @@ If a copy is on Cloudflare, the right channel is a [Cloudflare abuse report](htt
 
    The case is claimed (`abuse_report` = `{"status":"submitting",…}`) before the call, so two clicks never file twice. If the Worker dies during the call, that claim blocks the case. `npm run hp -- abuse-report-reset <caseId>` clears a claim older than 10 minutes, but only after it finds no `abuse-report-result.json` and no report for the case's host in the account's [submitted reports](https://developers.cloudflare.com/api/resources/abuse_reports/subresources/submitted/methods/list/) (`GET /accounts/{id}/abuse-reports/submitted`, Trust and Safety Read or Write) since the claim. A filed report is recorded on the case instead.
    ```bash
-   npx wrangler secret put ABUSE_REPORTER_JSON
+   npx wrangler secret put ABUSE_REPORTER_JSON --env=""
    ```
    ```json
    {"name":"Jane Doe","email":"legal@example.com","company":"Example Co","address1":"1 Main St","city":"Berlin","state":"BE","country":"DE"}

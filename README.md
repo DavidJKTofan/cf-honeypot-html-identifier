@@ -394,7 +394,7 @@ For local development, `npm run dev` runs `wrangler dev --env dev`. The `dev` [e
 First deploy (this [provisions](https://developers.cloudflare.com/workers/wrangler/configuration/#automatic-provisioning) D1 and R2 and uploads every secret in `.dev.vars`):
 
 ```bash
-npx wrangler deploy --secrets-file .dev.vars
+npx wrangler deploy --secrets-file .dev.vars --env=""
 ```
 
 Then apply the schema:
@@ -430,7 +430,7 @@ It fails if the deployed code is older than the last commit on `main` that chang
 To turn on WAF List sync, URL Scanner, Threat Intel and Brand Protection intake, [create a scoped API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) with **Account Filter Lists Edit, Intel Read, URL Scanner Edit**, then:
 
 ```bash
-npx wrangler secret put CF_API_TOKEN
+npx wrangler secret put CF_API_TOKEN --env=""
 ```
 
 For WAF blocking:
@@ -444,10 +444,10 @@ Recommended for every deployment that isn't local. In Zero Trust:
 2. Attach a people policy (who may sign in) and a **Service Auth** policy with a service token (for the CLI).
 3. Set the application's audience tag and your team domain as Worker secrets:
    ```bash
-   npx wrangler secret put ACCESS_AUD
+   npx wrangler secret put ACCESS_AUD --env=""
    ```
    ```bash
-   npx wrangler secret put ACCESS_TEAM_DOMAIN
+   npx wrangler secret put ACCESS_TEAM_DOMAIN --env=""
    ```
 4. Put the service token in `.env` (`HP_ACCESS_CLIENT_ID`, `HP_ACCESS_CLIENT_SECRET`) for the CLI.
 
@@ -459,7 +459,7 @@ Follow [`src/notify/discord/README.md`](src/notify/discord/README.md):
 1. Create a Discord app and bot.
 2. Store its token:
    ```bash
-   npx wrangler secret put DISCORD_BOT_TOKEN
+   npx wrangler secret put DISCORD_BOT_TOKEN --env=""
    ```
 3. Store the app ID, public key, channel ID and approver IDs as **secrets** (in `.dev.vars`, uploaded with `--secrets-file`).
 4. Add narrowly scoped [WAF skip rules](https://developers.cloudflare.com/waf/custom-rules/skip/) for Discord's requests ([details](src/notify/discord/README.md#zone-waf-note)).

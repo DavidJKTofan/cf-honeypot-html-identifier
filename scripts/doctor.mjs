@@ -57,7 +57,7 @@ function checkDeployment() {
 	const main = mainCommit();
 	if (main.error) return cannot(`couldn't read the last deployable commit on ${main.ref}`, main.error);
 
-	const res = wrangler(["deployments", "list", "--json"]);
+	const res = wrangler(["deployments", "list", "--json", "--env="]);
 	if (!res.ok) return cannot("`wrangler deployments list --json` failed (logged in? CLOUDFLARE_ACCOUNT_ID set?)", res.stderr || res.stdout);
 	let deployments;
 	try {
@@ -87,7 +87,7 @@ function checkDeployment() {
 // --- 2. Pending remote migrations ---------------------------------------------------------
 
 function checkMigrations() {
-	const res = wrangler(["d1", "migrations", "list", "DB", "--remote"]);
+	const res = wrangler(["d1", "migrations", "list", "DB", "--remote", "--env="]);
 	const out = `${res.stdout}\n${res.stderr}`;
 	if (!res.ok) return cannot("`wrangler d1 migrations list DB --remote` failed", out);
 	if (out.includes("No migrations to apply")) return console.log("✔ remote D1 has every migration applied");
