@@ -23,7 +23,7 @@ npm run db:migrate:remote
 npx wrangler d1 migrations list DB --remote
 ```
 
-([`wrangler d1 migrations`](https://developers.cloudflare.com/workers/wrangler/commands/d1/))
+([`wrangler d1 migrations`](https://developers.cloudflare.com/workers/wrangler/commands/d1/)) `db:migrate:local` targets the `dev` environment's local database, the one `npm run dev` uses. `npm run doctor` fails while the remote database has unapplied migrations.
 
 Tests apply these migrations automatically (`test/apply-migrations.ts`). Add new changes as `000N_description.sql`, and never edit a migration that has already been applied.
 
