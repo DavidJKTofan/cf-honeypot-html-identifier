@@ -1,5 +1,5 @@
 /** GET /whoami · POST /decode {token | html | html_b64 | url} */
-import { importTokenKey, sealToken } from "../../identity/token";
+import { loadSealingKey, sealToken } from "../../identity/token";
 import { collectSignals } from "../../identity/fingerprint";
 import { scanHtml, type ScanResult } from "../../identity/carriers";
 import { json, readJson, safeUrl } from "../../core/util";
@@ -26,7 +26,7 @@ function fromBase64(b64: string): string | null {
 export const decodeRoutes: AdminRoute = async ({ request, env, cfg, method, path, actor }) => {
 	if (method === "GET" && path === "/whoami") {
 		const s = collectSignals(request);
-		return json({ actor, auth: cfg.access ? "access" : "bearer", token: await sealToken(s, await importTokenKey(env.TOKEN_KEY)), fingerprint: s });
+		return json({ actor, auth: cfg.access ? "access" : "bearer", token: await sealToken(s, await loadSealingKey(env)), fingerprint: s });
 	}
 	if (method !== "POST" || path !== "/decode") return null;
 

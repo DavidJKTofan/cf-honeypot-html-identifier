@@ -3,8 +3,14 @@
 TOKEN_KEY="base64-encoded-32-byte-key"
 ADMIN_TOKEN="long-random-admin-bearer-token"
 
-# Optional: previous key, tried on decode during key rotation.
+# Optional: previous key, tried when decoding version 1 tokens.
 # TOKEN_KEY_PREVIOUS=""
+
+# Optional: token key ring (src/identity/README.md#key-rotation). JSON of key ID (0-255)
+# to base64 key: the highest ID seals version 2 tokens, every ID decodes. Unset = version 1
+# tokens sealed with TOKEN_KEY. Not loaded by `wrangler dev` (it isn't in secrets.required),
+# but uploaded by `wrangler deploy --secrets-file .dev.vars`.
+# TOKEN_KEYS='{"1":"<base64-32-byte-key>"}'
 
 # Optional: scoped Cloudflare API token enabling WAF List sync, Intel, URL Scanner
 # and Brand Protection intake. Permissions: Account Filter Lists Edit, Intel Read,

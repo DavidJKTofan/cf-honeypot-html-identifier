@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import type { InvestigateParams } from "../src/approvals/cases";
 import { nowSec } from "../src/core/util";
 import type { Fingerprint } from "../src/identity/fingerprint";
-import { importTokenKey, sealToken } from "../src/identity/token";
+import { loadSealingKey, sealToken } from "../src/identity/token";
 import { claimLead, createCase, getCase, getFlag, getLead, setCaseStatusIf, updateCase, upsertActiveFlag, upsertLead } from "../src/storage/d1";
 import { MAX_CASE_TOKENS } from "../src/workflows/evidence";
 import type { CaptureResult, DecodeResult, HostingSummary, TokenEvidence } from "../src/workflows/types";
@@ -128,7 +128,7 @@ describe("InvestigateWorkflow: evidence bounds (N1, N2)", () => {
 	it("records at most MAX_CASE_TOKENS valid tokens from a page stuffed with genuine ones", async () => {
 		const caseId = "case-wf-stuffed";
 		const params = await startCase(caseId, "wf-stuffed.example");
-		const key = await importTokenKey(env.TOKEN_KEY);
+		const key = await loadSealingKey(env);
 		const tokens = await Promise.all(Array.from({ length: MAX_CASE_TOKENS + 10 }, (_, i) => sealToken(fp(`198.18.0.${i + 1}`, i), key)));
 		const html = `<html><body>${tokens.map((t) => `<i data-t="${t}"></i>`).join("")}</body></html>`;
 		await using instance = await introspectWorkflowInstance(env.INVESTIGATE, caseId);
@@ -156,7 +156,7 @@ describe("InvestigateWorkflow: evidence bounds (N1, N2)", () => {
 			sampleUrl: null,
 			source: "beacon",
 			tokenRay: "0000000000000000",
-			token: await sealToken(fp("203.0.113.73"), await importTokenKey(env.TOKEN_KEY)),
+			token: await sealToken(fp("203.0.113.73"), await loadSealingKey(env)),
 			tokenIp: "203.0.113.73",
 		});
 		const leadId = lead!.lead.id;

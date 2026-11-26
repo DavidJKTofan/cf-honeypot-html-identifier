@@ -34,7 +34,7 @@ Every folder has a README with setup, usage and references. Start at [`src/READM
 |---|---|
 | `src/index.ts` | Router; `fetch` handler; exports both Workflow classes |
 | `src/core/` | `config.ts` (typed `vars`, parsed per request), `util.ts` (crypto, bounded reads, logs) |
-| `src/identity/` | `fingerprint.ts` (trusted signals), `token.ts` (seal/open), `carriers.ts` (inject/scan), `zerowidth.ts` |
+| `src/identity/` | `fingerprint.ts` (trusted signals), `token.ts` (seal/open, `TOKEN_KEYS` key ring), `carriers.ts` (inject/scan), `zerowidth.ts` |
 | `src/honeypot/` | `trap.ts` (pending flag, decoy, tarpit, robots, hotlinks), `beacon.ts` (script and receiver → pending lead) |
 | `src/storage/` | `d1.ts` (all SQL), `analytics.ts` (WAE writes, Analytics SQL reads) |
 | `src/approvals/` | `actions.ts` (**the only human-approved actions**, shared by every channel), `cases.ts`, `enforce.ts` (Cloudflare-IP protection, WAF sync), `leads.ts` |
@@ -70,6 +70,7 @@ Dependencies point inward: `admin`, `notify`, `workflows` → `approvals` → `s
 - **Admin auth.** With `ACCESS_TEAM_DOMAIN` + `ACCESS_AUD` set, only a verified Cloudflare Access JWT authenticates `ADMIN_PREFIX` (bearer ignored; actor = Access identity). Without them, the bearer token. Unauthenticated → plain `404`. Only `ADMIN_PREFIX` sits behind Access; the beacon, trap and Discord endpoint stay public. Setup: `src/admin/README.md#cloudflare-access`.
 - **The OpenAPI spec is the admin contract.** Add or change a route → update `src/admin/openapi.yaml` (and the endpoint table in [README, Admin API and CLI](README.md#admin-api-and-cli)); `test/openapi.test.ts` fails if a documented operation isn't routed.
 - **Notifier callbacks must verify signatures** (Discord: Ed25519 with ±5 min skew), check an **approver allowlist**, ACK within the platform deadline, and render untrusted values as inline code with mentions disabled.
+- **Tokens stay 91 characters, and old tokens keep decoding.** Every token version seals to `SEALED_LENGTH` (68) bytes; carriers, `scanHtml`, the beacon's regex and the zero-width carrier depend on it (`test/token.test.ts` checks). Version 1 tokens decode with `TOKEN_KEY`, then `TOKEN_KEY_PREVIOUS`; version 2 with the `TOKEN_KEYS` entry its header names. The highest ring ID seals. A malformed ring entry is logged and skipped, never fatal, and never logged with key material. Retired-key tokens are logged as `token_retired_key`.
 - **Abuse reports are drafted, never auto-submitted.** Drafts contain no personal data and never pre-fill `agree` or `signature` (`buildSubmission` adds them at submission); submission needs `ABUSE_REPORTS="submit"`, `ABUSE_REPORTER_JSON` and a human click. **Beacon-only evidence never gets a draft**: a draft claims the captured page contains our identifier, and a beacon report can be forged.
 - **Beacon-reported tokens are unconfirmed evidence.** When the capture holds no token, the Workflow may use the lead's beacon token (`source: "beacon"`, `beaconOnly`), and the report, Discord message and `report.json` must say "unconfirmed". Never present it as proof the page contains the token.
 - **Hotlinks are subresource loads only** (`Sec-Fetch-Dest` ≠ `document`/`iframe`). A link click from another site is normal traffic, not a clone signal.
@@ -94,15 +95,18 @@ Dependencies point inward: `admin`, `notify`, `workflows` → `approvals` → `s
 
 ## Data sources
 
-**Sealed in the token** (`src/token.ts` layout):
+**Sealed in the token** (`src/identity/token.ts` layout; [format and rotation](src/identity/README.md#key-rotation)):
 
 | Field | Source |
 |---|---|
+| Version, key ID | Version 2 only: a 2-byte header (version `2`, `TOKEN_KEYS` ID 0–255), readable without a key (masked with the IV) and authenticated. Version 1 (`TOKEN_KEY`, no ring) has no key ID |
 | IP | `CF-Connecting-IP` header |
 | Ray ID | `cf-ray` header (first 16 hex characters) |
 | ASN, country, colo | `request.cf.asn`, `request.cf.country`, `request.cf.colo` |
 | Bot score, verified bot, JS detection | `request.cf.botManagement.{score, verifiedBot, jsDetection.passed}` (Enterprise Bot Management only, otherwise null) |
 | issuedAt | Worker clock (unix seconds) |
+
+Every version seals to 68 bytes (91 base64url characters). Version 2 packs country and colo into 4 bytes to make room for the header.
 
 **Written to Workers Analytics Engine**, dataset `honeypot_events`:
 

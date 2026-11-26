@@ -48,7 +48,7 @@ The review checked the code against the [Workers best practices](https://develop
 | M5 | Evidence capture failed on pages over 2 MiB | ✅ |
 | M6 | D1 read replication was assumed but never enabled | ✅ (docs) |
 | M7 | A D1 read on every HTML request is the scaling ceiling | ⬜ |
-| M8 | AES-GCM key volume, and only one previous key for decoding | ⬜ |
+| M8 | AES-GCM key volume, and only one previous key for decoding | ✅ (rotation still manual) |
 | M9 | Workflow steps weren't idempotent | ✅ |
 | L1–L19 | D1, Workflow, privacy, robots.txt, tooling and docs hardening | see below |
 | R1–R2 | IDs in tracked files and in git history | ✅ |
@@ -92,10 +92,14 @@ The review checked the code against the [Workers best practices](https://develop
 
 Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/metrics-analytics/) and Workers CPU time under load.
 
-**M8. AES-GCM key volume.** ⬜ With random 96-bit IVs, [NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final) limits one key to about 2³² encryptions. That's roughly 43 days at 100 million pages a day. An IV collision allows forged tokens, which could frame someone else. Meanwhile `loadTokenKeys` keeps only one previous key, so rotating often loses the ability to decode older copies. **Fix:**
-- Token version 2 with a 1-byte key ID in the clear (the payload has room; keep 91 characters by shortening the Ray ID or the IP for IPv4, or accept a slightly longer token).
-- A key ring secret, for example `TOKEN_KEYS` as JSON `{ "3": "<base64>", "2": "…" }`, with the newest ID used for sealing and all IDs for decoding. Consider [Secrets Store](https://developers.cloudflare.com/secrets-store/).
-- Rotate on a schedule sized to traffic (for example monthly), alert when a retired key's tokens show up, and keep old keys for decoding only.
+**M8. AES-GCM key volume.** ✅ With random 96-bit IVs, [NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final) limits one key to about 2³² encryptions. That's roughly 43 days at 100 million pages a day. An IV collision allows forged tokens, which could frame someone else.
+- *Was:* `loadTokenKeys` kept only `TOKEN_KEY` and one `TOKEN_KEY_PREVIOUS`, and decode tried each key in turn, so rotating often lost the ability to decode older copies.
+- *Now (2026-11-26):*
+  - Token version 2 carries a 1-byte key ID in a 2-byte header (masked with the IV so tokens still look random, authenticated as additional data). It stays 91 characters: country and colo are packed into 4 bytes, and the inner version byte moved to the header.
+  - The optional `TOKEN_KEYS` secret holds a JSON key ring (`{"3":"<base64>","2":"…"}`). The highest ID seals, every ID decodes, and malformed entries are logged and skipped. A `TOKEN_KEYS_STORE` [Secrets Store](https://developers.cloudflare.com/secrets-store/) binding can replace it, so a rotation needs no redeploy.
+  - Version 1 tokens still decode with `TOKEN_KEY` and `TOKEN_KEY_PREVIOUS`. Without a ring, the Worker keeps sealing version 1.
+  - The beacon, admin decode and the Workflow log `token_retired_key` when a token from a retired key shows up. The [rotation runbook](src/identity/README.md#key-rotation) explains how to read it.
+- *Open:* rotation is manual. See "Key rotation automation" under [Operations and safety](#operations-and-safety).
 
 **M9. Workflow steps weren't idempotent.** ✅ A retry after a failed D1 write re-posted the Discord message, and one failing host redid every lead upsert. Now "notify reviewers" and "save notification ref" are separate steps (and the first skips if a ref exists), and maintenance makes one step per lead host. See [rules of Workflows](https://developers.cloudflare.com/workflows/build/rules-of-workflows/).
 
@@ -247,7 +251,7 @@ It touches every enforcement path, so it needs its own change with tests for eac
    - [HTMLRewriter](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) adds CPU per page.
    - The flag lookup is one D1 read per non-static request. For GET it runs in parallel with the origin fetch; for POST it runs first and adds latency (M7). Enable [read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/) first (M6).
    - Measure under load before launch.
-5. **Key management.** Anyone holding `TOKEN_KEY` can forge tokens and frame others. Use separate keys per environment, a documented rotation (`TOKEN_KEY_PREVIOUS`, and a key ring per M8), and least-privilege access to secrets (for example [Secrets Store](https://developers.cloudflare.com/secrets-store/)).
+5. **Key management.** Anyone holding a token key can forge tokens and frame others. Use separate keys per environment, the `TOKEN_KEYS` ring with the [rotation runbook](src/identity/README.md#key-rotation) (M8), and least-privilege access to secrets (for example the `TOKEN_KEYS_STORE` [Secrets Store](https://developers.cloudflare.com/secrets-store/) binding).
 6. **Detectability.**
    - Fetching twice and diffing reveals the token.
    - The beacon script is a visible extra request.
@@ -278,7 +282,7 @@ It touches every enforcement path, so it needs its own change with tests for eac
 - **More notifier adapters.** Slack ([Block Kit, signing-secret verification](https://docs.slack.dev/authentication/verifying-requests-from-slack)) and Telegram ([inline keyboards, `secret_token` webhooks](https://core.telegram.org/bots/api)) behind the existing `Notifier` interface. A [design sketch is in src/notify/README.md](src/notify/README.md#using-another-channel-slack-telegram-).
 - **Discord upgrades.** Slash commands (`/honeypot leads`), a thread per case, and reminders before a case expires.
 - **Rule-based auto-approval (opt-in).** A policy engine for narrow, well-understood cases, for example a trap hit with Bot Management score < 5 from a hosting ASN. Every auto-approval would be logged and reversible.
-- **Key rotation automation.** Scheduled `TOKEN_KEY` rotation with a key ring (M8), keeping N previous keys, with an alert when a retired key's tokens show up.
+- **Key rotation automation.** The key ring, key IDs and retired-key logs exist (M8). Still to do: a scheduled job that adds a new `TOKEN_KEYS_STORE` entry each month through the [Secrets Store API](https://developers.cloudflare.com/api/resources/secrets_store/), and an alert (a Workers Logs alert, or a Discord message) on `token_retired_key` events whose `newestIssuedAt` is later than that key's retirement.
 - **Infrastructure as code.** [Terraform](https://developers.cloudflare.com/terraform/) for the WAF list, block rule, Discord skip rules and Worker. They're currently created through the API by hand.
 - **Staging and CI.** An `env.staging` ([Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/)) with its own keys and resources; GitHub Actions or [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) for typecheck, tests and lint (L12, L13); Dependabot or Renovate; [gradual deployments](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/) for risky changes.
 
