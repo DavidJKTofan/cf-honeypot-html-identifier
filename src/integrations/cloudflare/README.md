@@ -20,6 +20,7 @@ npx wrangler secret put CF_API_TOKEN
 | [Threat Intel](https://developers.cloudflare.com/security-center/intel-apis/), [Brand Protection](https://developers.cloudflare.com/security-center/brand-protection/) | Intel Read (shares the [2,500 calls/month](https://developers.cloudflare.com/security-center/intel-apis/limits/) Enterprise quota) |
 | [URL Scanner](https://developers.cloudflare.com/radar/investigate/url-scanner/) | URL Scanner Edit |
 | [Submit abuse reports](https://developers.cloudflare.com/api/resources/abuse_reports/methods/create/) | Trust and Safety Write. The account also needs the abuse-reports entitlement, which Enterprise has by default |
+| [List submitted abuse reports](https://developers.cloudflare.com/api/resources/abuse_reports/subresources/submitted/methods/list/) (stuck-claim reset) | Trust and Safety Read or Write |
 
 The token is used together with the **secrets** `ACCOUNT_ID` and `WAF_LIST_ID` (the ID of your `honeypot_blocked` IP list). They are kept out of the public repo; put them in `.dev.vars` and deploy with `--secrets-file`. Without the token, the Workflow steps that need it show as `skipped` in the report.
 
@@ -41,6 +42,8 @@ If a copy is on Cloudflare, the right channel is a [Cloudflare abuse report](htt
    npm run hp -- abuse-report <caseId>
    ```
    The draft is merged with the reporter identity from the `ABUSE_REPORTER_JSON` secret (plus `signature` = your name and, for DMCA, `agree: 1`, both set at this point only) and sent to `POST /accounts/{id}/abuse-reports/{report_type}`. The result is saved as `abuse-report-result.json`.
+
+   The case is claimed (`abuse_report` = `{"status":"submitting",…}`) before the call, so two clicks never file twice. If the Worker dies during the call, that claim blocks the case. `npm run hp -- abuse-report-reset <caseId>` clears a claim older than 10 minutes, but only after it finds no `abuse-report-result.json` and no report for the case's host in the account's [submitted reports](https://developers.cloudflare.com/api/resources/abuse_reports/subresources/submitted/methods/list/) (`GET /accounts/{id}/abuse-reports/submitted`, Trust and Safety Read or Write) since the claim. A filed report is recorded on the case instead.
    ```bash
    npx wrangler secret put ABUSE_REPORTER_JSON
    ```

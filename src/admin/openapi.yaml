@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: cf-honeypot-html-identifier admin API
-  version: 0.7.0
+  version: 0.8.0
   summary: Decode identifiers, review leads, run investigations, decide cases and manage flags.
   description: |
     Admin API of the honeypot Worker, served under `ADMIN_PREFIX` (default `/__hp`) on every
@@ -374,6 +374,29 @@ paths:
         - { $ref: "#/components/parameters/CaseId" }
       responses:
         "201": { $ref: "#/components/responses/ActionOk" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/ActionRefused" }
+
+  /cases/{id}/abuse-report/reset:
+    post:
+      tags: [cases]
+      operationId: resetAbuseReport
+      summary: Clear a stuck abuse-report submission so it can be submitted again
+      description: |
+        A submission claims the case (`abuse_report` = `{"status":"submitting",…}`) before the API call. If the
+        Worker dies during that call, the claim blocks the case. This route clears it only when all of these hold:
+        - the claim is older than 10 minutes (a younger one may still be running);
+        - no result was saved to R2 (`abuse-report-result.json`);
+        - the account's [submitted reports](https://developers.cloudflare.com/api/resources/abuse_reports/subresources/submitted/methods/list/)
+          since the claim hold none for the case's host (needs `CF_API_TOKEN` with Trust and Safety Read or Write);
+        - the claim is unchanged when it is cleared (conditional write).
+
+        When a submitted report is found, its record replaces the claim instead, and the call answers `409`. A
+        submitted report is never reset. CLI `hp abuse-report-reset <id>`.
+      parameters:
+        - { $ref: "#/components/parameters/CaseId" }
+      responses:
+        "200": { $ref: "#/components/responses/ActionOk" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/ActionRefused" }
 

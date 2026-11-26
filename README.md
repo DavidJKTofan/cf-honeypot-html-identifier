@@ -515,6 +515,7 @@ Setup, policies and troubleshooting: [src/admin/README.md](src/admin/README.md#c
 | `GET /cases/{id}/evidence/{file}` | One evidence file from R2 (snapshot, screenshot, intel, abuse draft, decision…) | `evidence <id> <file>` |
 | `POST /cases/{id}/decision` | Human decision: `decoy`, `block` or `none` (Cloudflare IPs and verified bots skipped) | `decide <id> <action> [ttlDays]` |
 | `POST /cases/{id}/abuse-report` | Submit the drafted Cloudflare abuse report (`ABUSE_REPORTS="submit"` only; a legal statement) | `abuse-report <id>` |
+| `POST /cases/{id}/abuse-report/reset` | Clear a submission stuck for over 10 minutes, after checking the account's submitted reports (never resets a filed report) | `abuse-report-reset <id>` |
 | `GET /flags?status=` · `POST /flags` | List flags, or flag one IP manually (decoy or block; no CIDRs, no Cloudflare IPs) | `flags [status]` · `flag <ip> [decoy\|block] [ttlDays]` |
 | `POST /flags/approve` · `/reject` | Approve (decoy or block) or reject pending trap flags (the digest buttons) | `approve-flags <ind…>\|--all [--block]` · `reject-flags <ind…>` |
 | `DELETE /flags/{indicator}` | Remove a flag and its WAF list item | `unflag <indicator>` |

@@ -7,7 +7,7 @@
  *   · purge stale leads
  *   · foreign-Referer hosts (WAE) → pending leads (one step per host)
  *   · Brand Protection string/logo matches → pending leads (recent only, capped, one step per host)
- *   · pending-flag digest
+ *   · pending-flag digest (an IP that is also in an open case says so: decide it there)
  *
  * It never enforces anything new: it only creates PENDING leads for a human, and the
  * reconcile step only re-applies blocks a human already approved.
@@ -16,10 +16,11 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { cfApi, type BrandMatch } from "../integrations/cloudflare/api";
 import { isCanonicalHost, loadConfig } from "../core/config";
 import { reconcileWafList, removeBlocksFromWafDetailed, type WafRemoval } from "../approvals/enforce";
+import { pendingFlagDigest } from "../approvals/digest";
 import { recordLead } from "../approvals/leads";
 import { notifySafe } from "../notify";
 import { topForeignHosts } from "../storage/analytics";
-import { deleteExpiredFlags, indicatorFor, listExpiredFlags, parseIndicator, purgeStaleLeads, topPendingFlags } from "../storage/d1";
+import { deleteExpiredFlags, indicatorFor, listExpiredFlags, parseIndicator, purgeStaleLeads } from "../storage/d1";
 import { errorMessage, hostMatchesSuffix, log, nowSec } from "../core/util";
 
 const DAY = 86_400;
@@ -172,18 +173,14 @@ export class MaintenanceWorkflow extends WorkflowEntrypoint<Env, unknown> {
 			brandLeads = n;
 		}
 
-		// One digest per run for trap flags (could be many): top 5 with per-flag buttons.
+		// One digest per run for trap flags (could be many): top 5 with per-flag buttons, each
+		// annotated when an open case already covers its IP.
 		const flagDigest = await step.do("pending flags digest", async () => {
-			const { flags, total } = await topPendingFlags(env.DB, 5);
+			const { flags, total, inOpenCase } = await pendingFlagDigest(env.DB, 5);
 			if (total === 0) return "none pending";
-			const ref = await notifySafe(
-				env,
-				cfg,
-				"flags",
-				(n) => n.notifyFlags(flags.map((f) => ({ indicator: f.indicator, reason: f.reason, hits: f.hits, createdAt: f.created_at })), total),
-				{ rateLimit: false },
-			);
-			return ref ? `sent (${total} pending)` : `not sent (${total} pending; notifier disabled?)`;
+			const ref = await notifySafe(env, cfg, "flags", (n) => n.notifyFlags(flags, total), { rateLimit: false });
+			const counts = `${total} pending${inOpenCase ? `, ${inOpenCase} also in an open case` : ""}`;
+			return ref ? `sent (${counts})` : `not sent (${counts}; notifier disabled?)`;
 		});
 
 		const summary = {

@@ -1,8 +1,9 @@
 /**
  * GET /cases · POST /cases {url} · GET /cases/:id · GET /cases/:id/report[?format=json]
  * GET /cases/:id/evidence/:file · POST /cases/:id/decision · POST /cases/:id/abuse-report
+ * POST /cases/:id/abuse-report/reset
  */
-import { decideCaseAction, submitAbuseReportAction } from "../../approvals/actions";
+import { decideCaseAction, resetAbuseReportAction, submitAbuseReportAction } from "../../approvals/actions";
 import { CaseInputError, parseDecision, startInvestigation } from "../../approvals/cases";
 import { errorMessage, json, readJson } from "../../core/util";
 import { resolveSafe } from "../../notify";
@@ -69,9 +70,14 @@ export const caseRoutes: AdminRoute = async ({ request, env, cfg, method, path, 
 		return json(result, { status: result.ok ? 202 : 409 });
 	}
 
-	if (method === "POST" && seg[2] === "abuse-report") {
+	if (method === "POST" && seg[2] === "abuse-report" && seg.length === 3) {
 		const result = await submitAbuseReportAction(env, cfg, caseId, actor);
 		return json(result, { status: result.ok ? 201 : 409 });
+	}
+
+	if (method === "POST" && seg[2] === "abuse-report" && seg[3] === "reset" && seg.length === 4) {
+		const result = await resetAbuseReportAction(env, caseId, actor);
+		return json(result, { status: result.ok ? 200 : 409 });
 	}
 	return null;
 };

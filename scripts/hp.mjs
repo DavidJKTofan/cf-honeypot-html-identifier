@@ -124,6 +124,7 @@ const commands = {
 		call("POST", "/flags", { ip, action, reason: "manual (cli)", ...(ttlDays ? { ttlDays: Number(ttlDays) } : {}) }),
 	unflag: ([indicator]) => call("DELETE", `/flags/${enc(indicator)}`),
 	"abuse-report": ([id]) => call("POST", `/cases/${enc(id)}/abuse-report`),
+	"abuse-report-reset": ([id]) => call("POST", `/cases/${enc(id)}/abuse-report/reset`),
 	evidence: ([id, file]) => call("GET", `/cases/${enc(id)}/evidence/${enc(file)}`),
 	"notify-test": () => call("POST", "/notify/test"),
 	"notify-flags": () => call("POST", "/notify/flags"),

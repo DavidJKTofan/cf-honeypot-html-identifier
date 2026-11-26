@@ -67,6 +67,8 @@ export interface FlagNotice {
 	reason: string | null;
 	hits: number;
 	createdAt: number;
+	/** An open case whose decoded tokens name this IP: decide it there, not twice. */
+	openCase?: { id: string; status: string };
 }
 
 export interface Notifier {
