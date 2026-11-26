@@ -93,7 +93,7 @@ export class InvestigateWorkflow extends WorkflowEntrypoint<Env, InvestigatePara
 							secondsBeforeCapture: secondsBeforeCapture(t.fingerprint.issuedAt, capture.fetchedAt),
 						}));
 				// Bounded: a page stuffed with genuine tokens can't push this step past its 1 MiB result.
-				const capped = capCaseTokens(evidence(await decodeTokens(env, scan.tokens, { enrich: false }), "capture"));
+				const capped = capCaseTokens(evidence(await decodeTokens(env, scan.tokens, { enrich: false, source: "workflow" }), "capture"));
 				const tokens = [...capped.kept];
 				// The capture found nothing, but a visitor's browser reported a valid token from this
 				// host (the lead's beacon token): the copy may cloak the investigator (CF-Worker header,
@@ -103,7 +103,7 @@ export class InvestigateWorkflow extends WorkflowEntrypoint<Env, InvestigatePara
 				if (tokens.length === 0 && leadId !== null) {
 					const lead = await getLead(env.DB, leadId);
 					if (lead?.token && lead.host === host) {
-						const reported = evidence(await decodeTokens(env, [{ carrier: "beacon", token: lead.token }], { enrich: false }), "beacon");
+						const reported = evidence(await decodeTokens(env, [{ carrier: "beacon", token: lead.token }], { enrich: false, source: "workflow" }), "beacon");
 						tokens.push(...reported);
 						beaconOnly = reported.length > 0;
 					}

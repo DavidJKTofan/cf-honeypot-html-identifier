@@ -12,7 +12,7 @@ import { isCanonicalHost, type Config } from "../core/config";
 import { writeEvent } from "../storage/analytics";
 import { collectSignals, scrubVisitorSignals, type RequestSignals } from "../identity/fingerprint";
 import { recordLead } from "../approvals/leads";
-import { loadTokenKeys, openToken } from "../identity/token";
+import { loadTokenKeys, logRetiredKeys, openToken, TOKEN_LENGTH } from "../identity/token";
 import { BodyTooLargeError, errorMessage, hostMatchesSuffix, log, readStreamLimited, safeUrl, truncate } from "../core/util";
 
 const codes = (s: string) => `[${Array.from(s, (c) => c.charCodeAt(0)).join(",")}]`;
@@ -24,7 +24,7 @@ export function beaconScript(origin: string, cfg: Config): string {
 	return (
 		`(function(){try{var d=document,l=location,f=function(a){return String.fromCharCode.apply(null,a)},` +
 		`h=[${hosts}].map(f);if(h.indexOf(l.hostname)>-1)return;var t="",m=d.getElementsByTagName("meta");` +
-		`for(var i=0;i<m.length;i++){var c=(m[i].getAttribute("content")||"").trim();if(/^[A-Za-z0-9_-]{91}$/.test(c)){t=c;break}}` +
+		`for(var i=0;i<m.length;i++){var c=(m[i].getAttribute("content")||"").trim();if(/^[A-Za-z0-9_-]{${TOKEN_LENGTH}}$/.test(c)){t=c;break}}` +
 		`var e=f(${endpoint}),p=JSON.stringify({t:t,u:l.href.slice(0,2048),r:(d.referrer||"").slice(0,512)});` +
 		`if(navigator.sendBeacon&&navigator.sendBeacon(e,p))return;fetch(e,{method:"POST",body:p,keepalive:!0,mode:"no-cors"})` +
 		`}catch(_){}})();\n`
@@ -93,10 +93,13 @@ export async function handleBeacon(request: Request, env: Env, ctx: ExecutionCon
 	const token = typeof body.t === "string" ? body.t.trim() : "";
 	let rayId: string | null = null;
 	let tokenIp: string | null = null;
+	let retired: (() => void) | null = null;
 	try {
-		const fp = token ? await openToken(token, await loadTokenKeys(env)) : null;
-		rayId = fp?.rayId ?? null;
-		tokenIp = fp?.ip ?? null;
+		const ring = token ? await loadTokenKeys(env) : null;
+		const opened = ring ? await openToken(token, ring) : null;
+		if (ring && opened?.retired) retired = () => logRetiredKeys("beacon", [opened], ring.currentKeyId);
+		rayId = opened?.fingerprint.rayId ?? null;
+		tokenIp = opened?.fingerprint.ip ?? null;
 	} catch (err) {
 		log("error", "beacon: token open failed", { error: errorMessage(err) });
 	}
@@ -119,6 +122,8 @@ export async function handleBeacon(request: Request, env: Env, ctx: ExecutionCon
 	if (!(await env.BEACON_LIMITER.limit({ key: `beacon-token:${rayId}` })).success) return NO_CONTENT();
 
 	writeEvent(env, "beacon", s, { index: host, foreignHost: host, note: rayId });
+	// Logged only past the limits above: a popular clone would otherwise log once per visitor.
+	retired?.();
 
 	// Global: whatever the host or token, at most LEAD_LIMITER lead upserts per minute per location.
 	if (!(await env.LEAD_LIMITER.limit({ key: "lead" })).success) {

@@ -5,7 +5,7 @@
 import type { FoundToken } from "../identity/carriers";
 import { lookupRay, type RayEnrichment } from "../storage/analytics";
 import type { Fingerprint } from "../identity/fingerprint";
-import { loadTokenKeys, openToken } from "../identity/token";
+import { loadTokenKeys, logRetiredKeys, openToken, type OpenedToken, type TokenVersion } from "../identity/token";
 import { errorMessage, sha256Hex } from "../core/util";
 import { DEFAULT_CAPTURE_USER_AGENT } from "../core/config";
 
@@ -17,6 +17,12 @@ export interface DecodedToken {
 	valid: boolean;
 	fingerprint: Fingerprint | null;
 	issuedAtIso: string | null;
+	/** Token format (null when invalid). */
+	version: TokenVersion | null;
+	/** Ring ID that opened a version 2 token (null for v1 or invalid). */
+	keyId: number | null;
+	/** Sealed with a key that no longer seals new tokens (see `OpenedToken.retired`). */
+	retiredKey: boolean;
 	enrichment?: RayEnrichment | null;
 	enrichmentError?: string;
 }
@@ -24,20 +30,27 @@ export interface DecodedToken {
 export async function decodeTokens(
 	env: Env,
 	found: FoundToken[],
-	opts: { enrich: boolean; maxEnrich?: number },
+	opts: { enrich: boolean; maxEnrich?: number; source?: "decode" | "workflow" },
 ): Promise<DecodedToken[]> {
-	const keys = await loadTokenKeys(env);
+	const ring = await loadTokenKeys(env);
 	const out: DecodedToken[] = [];
+	const opened: OpenedToken[] = [];
 	for (const f of found) {
-		const fp = await openToken(f.token, keys);
+		const t = await openToken(f.token, ring);
+		if (t) opened.push(t);
+		const fp = t?.fingerprint ?? null;
 		out.push({
 			carrier: f.carrier,
 			token: f.token,
 			valid: fp !== null,
 			fingerprint: fp,
 			issuedAtIso: fp ? new Date(fp.issuedAt * 1000).toISOString() : null,
+			version: t?.version ?? null,
+			keyId: t?.keyId ?? null,
+			retiredKey: t?.retired ?? false,
 		});
 	}
+	logRetiredKeys(opts.source ?? "decode", opened, ring.currentKeyId);
 	if (opts.enrich) {
 		let budget = opts.maxEnrich ?? 20;
 		for (const d of out) {
