@@ -18,7 +18,7 @@ ADMIN_TOKEN="long-random-admin-bearer-token"
 # CF_API_TOKEN=""
 
 # --- Account-specific IDs (secrets so they never appear in the public repo) ---
-# Upload everything in this file with: npx wrangler deploy --secrets-file .dev.vars
+# Upload everything in this file with: npx wrangler deploy --secrets-file .dev.vars --env=""
 # ACCOUNT_ID="<your-cloudflare-account-id>"
 # WAF_LIST_ID="<id-of-your-honeypot_blocked-ip-list>"
 
@@ -33,4 +33,4 @@ ADMIN_TOKEN="long-random-admin-bearer-token"
 # DISCORD_CHANNEL_ID="<channel-id>"
 # DISCORD_APPROVER_IDS="<your-discord-user-id>"
 # DISCORD_APPROVER_ROLE_IDS=""
-# DISCORD_BOT_TOKEN=""        # or: npx wrangler secret put DISCORD_BOT_TOKEN
+# DISCORD_BOT_TOKEN=""        # or: npx wrangler secret put DISCORD_BOT_TOKEN --env=""

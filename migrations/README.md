@@ -20,7 +20,7 @@ npm run db:migrate:remote
 ```
 
 ```bash
-npx wrangler d1 migrations list DB --remote
+npx wrangler d1 migrations list DB --remote --env=""
 ```
 
 ([`wrangler d1 migrations`](https://developers.cloudflare.com/workers/wrangler/commands/d1/)) `db:migrate:local` targets the `dev` environment's local database, the one `npm run dev` uses. `npm run doctor` fails while the remote database has unapplied migrations.

@@ -16,7 +16,7 @@ The Discord adapter for the [notifier interface](../README.md). The Worker posts
 2. **General Information:** copy the **Application ID** (`DISCORD_APPLICATION_ID`) and the **Public Key** (`DISCORD_PUBLIC_KEY`). They aren't secret, but they're stored as Worker [**secrets**](https://developers.cloudflare.com/workers/configuration/secrets/) so they never appear in the public repo. Add them to `.dev.vars` (gitignored) and upload them with `--secrets-file` in step 6, or set each one with `npx wrangler secret put <NAME>`.
 3. **Bot:** choose **Reset Token**, then store it as a secret. Never put it in `vars` or git.
    ```bash
-   npx wrangler secret put DISCORD_BOT_TOKEN
+   npx wrangler secret put DISCORD_BOT_TOKEN --env=""
    ```
    Turn **Public Bot** off. Gateway intents aren't needed, because this bot uses HTTP interactions only.
 4. **Install the bot in your server** with View Channel, Send Messages, Embed Links and Read Message History (`84992`):
@@ -32,7 +32,7 @@ The Discord adapter for the [notifier interface](../README.md). The Worker posts
    - All of these are secrets too.
 6. **Deploy** ([`wrangler deploy --secrets-file`](https://developers.cloudflare.com/workers/wrangler/commands/workers/#deploy) uploads every secret in `.dev.vars`):
    ```bash
-   npx wrangler deploy --secrets-file .dev.vars
+   npx wrangler deploy --secrets-file .dev.vars --env=""
    ```
 7. **Interactions Endpoint URL:** under General Information, set
    ```text
@@ -49,7 +49,7 @@ The Discord adapter for the [notifier interface](../README.md). The Worker posts
 1. In the channel, open *Edit Channel → Integrations → Webhooks → New Webhook* and copy the URL.
 2. Store it:
    ```bash
-   npx wrangler secret put DISCORD_WEBHOOK_URL
+   npx wrangler secret put DISCORD_WEBHOOK_URL --env=""
    ```
 3. Set `NOTIFY_CHANNEL="discord-webhook"`.
 
