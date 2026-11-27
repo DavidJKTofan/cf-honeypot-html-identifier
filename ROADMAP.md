@@ -107,7 +107,7 @@ Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/m
   - The optional `TOKEN_KEYS` secret holds a JSON key ring (`{"3":"<base64>","2":"…"}`). The highest ID seals, every ID decodes, and malformed entries are logged and skipped. A `TOKEN_KEYS_STORE` [Secrets Store](https://developers.cloudflare.com/secrets-store/) binding can replace it, so a rotation needs no redeploy.
   - Version 1 tokens still decode with `TOKEN_KEY` and `TOKEN_KEY_PREVIOUS`. Without a ring, the Worker keeps sealing version 1.
   - The beacon, admin decode and the Workflow log `token_retired_key` when a token from a retired key shows up. The [rotation runbook](src/identity/README.md#key-rotation) explains how to read it.
-- *Open:* rotation is manual, though `npm run token-keys -- add` / `upload` (2026-11-26) removes the hand-edited JSON. The demo has used the ring (key ID 1) since 2026-11-26. See "Key rotation automation" under [Operations and safety](#operations-and-safety).
+- *Open:* rotation is manual, though `npm run token-keys -- add` / `upload` (2026-11-26) removes the hand-edited JSON. The demo uses the ring since 2026-11-26. A Worker secret caps it at about 95 keys (5 KB); Secrets Store holds all 256. See "Key rotation automation" under [Operations and safety](#operations-and-safety).
 
 **M9. Workflow steps weren't idempotent.** ✅ A retry after a failed D1 write re-posted the Discord message, and one failing host redid every lead upsert. Now "notify reviewers" and "save notification ref" are separate steps (and the first skips if a ref exists), and maintenance makes one step per lead host. See [rules of Workflows](https://developers.cloudflare.com/workflows/build/rules-of-workflows/).
 

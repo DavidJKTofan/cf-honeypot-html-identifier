@@ -363,7 +363,7 @@ npm install
 cp .dev.vars.example .dev.vars
 ```
 
-Fill in `TOKEN_KEY` (generate it with `openssl rand -base64 32`) and `ADMIN_TOKEN`. In production, also set the `TOKEN_KEYS` key ring and rotate it on a schedule ([key rotation](src/identity/README.md#key-rotation)). Also fill in the account-specific IDs (`ACCOUNT_ID`, `WAF_LIST_ID`, `DISCORD_*`). They are uploaded as [**secrets**](https://developers.cloudflare.com/workers/configuration/secrets/), so they never appear in the repo.
+Fill in `TOKEN_KEY` (generate it with `openssl rand -base64 32`) and `ADMIN_TOKEN`. In production, also set the `TOKEN_KEYS` key ring and rotate it on a schedule sized to your traffic, by hand with `npm run token-keys` ([key rotation](src/identity/README.md#key-rotation)). Also fill in the account-specific IDs (`ACCOUNT_ID`, `WAF_LIST_ID`, `DISCORD_*`). They are uploaded as [**secrets**](https://developers.cloudflare.com/workers/configuration/secrets/), so they never appear in the repo.
 
 ```bash
 cp .env.example .env
@@ -583,7 +583,7 @@ Then tune for scraping with Bot Management and AI Crawl Control, and add this Wo
 - **Cloaking:** a clone can serve a token-free page to the investigator. The capture no longer announces itself in its User-Agent, but a Worker fetch always carries `CF-Worker` and comes from Cloudflare's network. If the beacon still reports a token, the case continues as *unconfirmed*; otherwise it closes as `no_evidence`.
 - **Attribution can be laundered:** a scraper that fetches through residential proxies, a Cloudflare Worker (never blocked by design), a translator or an archive gets someone else's IP into the token. A scraper can also present any genuine token it obtained. Proof of *copying* holds; the IP is a lead.
 - **IPv6 rotation:** flags and blocks are single addresses, while one IPv6 `/64` holds 2⁶⁴ of them. `/64` support is on the [roadmap](ROADMAP.md#live-test-findings-and-scraper-bypasses-2026-11-25).
-- **Token key volume:** AES-GCM with random 96-bit IVs should seal at most about 2³² tokens per key ([NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final)), roughly 43 days at 100 million pages a day. Use the `TOKEN_KEYS` key ring and rotate well before that (monthly is safe up to about 100 million pages a day). Version 2 tokens carry a key ID, so every key kept in the ring still decodes its copies, and tokens sealed with a retired key are logged. Rotation is manual for now; the steps are in the [key rotation runbook](src/identity/README.md#key-rotation). Without a ring, only `TOKEN_KEY` and one `TOKEN_KEY_PREVIOUS` decode.
+- **Token key volume:** AES-GCM with random 96-bit IVs should seal at most about 2³² tokens per key ([NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final)), roughly 43 days at 100 million pages a day. Use the `TOKEN_KEYS` key ring and rotate well before that (monthly is safe up to about 100 million pages a day). Version 2 tokens carry a key ID, so every key kept in the ring still decodes its copies, and tokens sealed with a retired key are logged. Rotation is manual for now (`npm run token-keys`); the steps are in the [key rotation runbook](src/identity/README.md#key-rotation). A Worker secret fits about 95 keys (5 KB), and Secrets Store all 256. Without a ring, only `TOKEN_KEY` and one `TOKEN_KEY_PREVIOUS` decode.
 - **Large copies:** captures keep the first 2 MiB; the report says when a page was truncated, and the hash covers what was captured.
 - **False positives:**
   - Shared or proxy IPs make IP-based decoys and blocks blunt instruments.

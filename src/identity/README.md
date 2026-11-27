@@ -53,7 +53,18 @@ if (opened) logRetiredKeys("decode", [opened], ring.currentKeyId);
 
 ## Key rotation
 
-AES-GCM with random 96-bit IVs should seal at most about 2³² tokens per key ([NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final), section 8.3). That's roughly 43 days at 100 million pages a day. Past that, the chance of an IV collision grows, and a collision lets someone forge tokens, which could frame an innocent IP. Rotate on a schedule sized to your traffic: monthly is a safe default up to about 100 million pages a day.
+**In short.** `TOKEN_KEYS` is a numbered list of keys. The highest number seals every new token, and every number still opens tokens: a version 2 token carries a masked label saying which key sealed it. **Rotating** means adding the next number. From then on, new tokens use the new key, and copies sealed with older keys keep decoding (reported as `retiredKey`). Visitors see no difference, since a token is still 91 random-looking characters in the same places. Nothing in D1 or R2 changes, and the upload creates a new Worker version with the same code. Rotation is **manual**: two commands (`npm run token-keys -- add`, then `upload`) with a backup in between, and nothing reminds you.
+
+**Why.** AES-GCM with random 96-bit IVs should seal at most about 2³² (4.3 billion) tokens per key ([NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final), section 8.3). Past that, the chance that an IV repeats grows, and a repeat lets someone forge tokens, which could frame an innocent IP. How long one key lasts at that limit:
+
+| Pages per day | One key lasts |
+|---|---|
+| 100 million | about 43 days |
+| 10 million | about 1.2 years |
+| 1 million | about 12 years |
+| a few hundred (a demo) | thousands of years |
+
+Monthly is a safe default up to about 100 million pages a day. Below about a million pages a day one key would last more than a decade, so rotating is hygiene: no single key protects all of your evidence, and replacing a leaked key is a rehearsed step instead of an emergency.
 
 ### The key ring
 
@@ -68,6 +79,7 @@ AES-GCM with random 96-bit IVs should seal at most about 2³² tokens per key ([
 - A malformed entry (bad ID, a key that isn't 32 bytes) is skipped and logged as `token_keys_entry_skipped` by the decode paths (beacon, admin decode, Workflow). An unparseable value is logged as `token_keys_invalid`. Neither is ever fatal. The HTML path logs nothing (it runs on every page), so a malformed newest entry silently leaves the previous ID sealing: check with step 4 below.
 - Without `TOKEN_KEYS`, or when it has no usable entry, the Worker seals version 1 tokens with `TOKEN_KEY`, as before.
 - `TOKEN_KEY` (required) and `TOKEN_KEY_PREVIOUS` keep decoding version 1 tokens forever. Once the ring is in use, don't change `TOKEN_KEY`: it only decodes old copies. Ring keys never open version 1 tokens.
+- **Capacity:** a Worker secret holds at most [5 KB](https://developers.cloudflare.com/workers/platform/limits/#environment-variables), and each entry takes about 52 bytes, so a `TOKEN_KEYS` secret fits about **95 keys** (about 8 years of monthly rotation). A [Secrets Store](#secrets-store) secret holds 64 KB, enough for all 256 IDs. `npm run token-keys` warns as the ring nears 5 KB and refuses to upload a larger one.
 
 `TOKEN_KEYS` isn't in `secrets.required`, so `wrangler dev` doesn't load it from `.dev.vars` (only listed secrets load locally). Tests set it in `vitest.config.ts`.
 
@@ -77,14 +89,14 @@ AES-GCM with random 96-bit IVs should seal at most about 2³² tokens per key ([
 2. **Back up the ring:** copy the `TOKEN_KEYS` line into your password manager. Cloudflare can't show a secret again, and every later rotation needs the older keys. Losing an old key makes the copies sealed with it undecodable (they then look like forgeries).
 3. **Upload it:** `npm run token-keys -- upload`, which pipes the ring into `npx wrangler secret put TOKEN_KEYS --env=""` without showing it. This deploys a new version of the Worker (same code; `npm run doctor` ignores secret-only deploys). With the Secrets Store binding (below), update the store secret instead; no deploy is needed.
 4. **Check it seals with the new ID:** `npm run hp -- whoami` returns a fresh token; `npm run hp -- decode <token>` must show `"version": 2`, the new `"keyId"` and `"retiredKey": false`. If it shows the previous ID, the new entry was skipped: look for `token_keys_entry_skipped` in Workers Logs (the decode call just logged it).
-5. **Watch for retired keys.** Every decode path logs `token_retired_key` (level `warn`) with `source` (`beacon`, `decode` or `workflow`), `tokenVersion`, `keyId` or `legacyKey`, `currentKeyId`, `count`, `oldestIssuedAt`, `newestIssuedAt` and `newestRayId`. Old copies carrying an old key are expected. A retired key whose `newestIssuedAt` is **later than the rotation** is not: something still seals with that key (a stale deployment or a second Worker), or the key leaked and someone is forging tokens. Treat those tokens as unconfirmed until you know which.
-6. **Retire old keys for decoding only.** Keep an ID in the ring as long as you may need to decode copies sealed with it; the token never expires. Remove an ID only when you accept that copies sealed with it become undecodable (they then look like forgeries). There is room for 256 IDs: at monthly rotation that's over 20 years.
+5. **Watch for retired keys.** Every decode path logs `token_retired_key` (level `warn`) with `source` (`beacon`, `decode` or `workflow`), `tokenVersion`, `keyId` or `legacyKey`, `currentKeyId`, `count`, `oldestIssuedAt`, `newestIssuedAt` and `newestRayId`. Old copies carrying an old key are expected. A retired key whose `newestIssuedAt` is **later than the rotation** is not: something still seals with that key (a stale deployment or a second Worker), or the key leaked and someone is forging tokens. Treat those tokens as unconfirmed until you know which. This check only catches a careless forger: `issuedAt` is inside the encrypted payload, so someone holding the key can backdate a forged token, and no warning doesn't prove there was no leak.
+6. **Retire old keys for decoding only.** Keep an ID in the ring as long as you may need to decode copies sealed with it; the token never expires. Remove an ID only when you accept that copies sealed with it become undecodable (they then look like forgeries). A Worker secret fits about 95 IDs (see **Capacity** above); Secrets Store fits all 256.
 
-A suspected key leak is different from a scheduled rotation: add a new ID right away, and treat any token from the leaked ID issued after the leak as possibly forged.
+**A suspected key leak** is different from a scheduled rotation. Add a new ID right away (`npm run token-keys -- add`, then `upload`). Then treat **every** token sealed with the leaked ID as unconfirmed, whatever its `issuedAt`: the date is inside the encrypted payload, so anyone holding the key can backdate a forgery. The independent check is the Ray ID. `npm run hp -- decode <token>` looks it up in Analytics Engine (`enrichment`), and only requests this Worker served have a row there. The row's IP must match the IP the token names, because a forger can reuse the Ray ID of their own request. Rows are kept for [3 months](https://developers.cloudflare.com/analytics/analytics-engine/limits/), so an older token from a leaked key can't be confirmed at all. Keep the leaked ID in the ring (removing it would make genuine old copies look forged too), and record the leak date with your cases.
 
 ### Secrets Store
 
-[Secrets Store](https://developers.cloudflare.com/secrets-store/) keeps account-level secrets with their own [access roles](https://developers.cloudflare.com/secrets-store/access-control/) and audit logs, so fewer people need Worker edit rights to rotate a key. To use it, create a secret holding the same JSON and bind it as `TOKEN_KEYS_STORE` in your own `wrangler.jsonc` (the store ID is account-specific, so it isn't in this repo):
+[Secrets Store](https://developers.cloudflare.com/secrets-store/) keeps account-level secrets with their own [access roles](https://developers.cloudflare.com/secrets-store/access-control/) and audit logs, so fewer people need Worker edit rights to rotate a key. A store secret holds up to [64 KB](https://developers.cloudflare.com/secrets-store/manage-secrets/), enough for all 256 key IDs (a Worker secret fits about 95). To use it, create a secret holding the same JSON and bind it as `TOKEN_KEYS_STORE` in your own `wrangler.jsonc` (the store ID is account-specific, so it isn't in this repo):
 
 ```jsonc
 "secrets_store_secrets": [
