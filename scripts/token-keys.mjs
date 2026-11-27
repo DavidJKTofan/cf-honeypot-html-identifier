@@ -19,6 +19,26 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 const LINE = /^TOKEN_KEYS='(.*)'[ \t]*$/m;
 const ID = /^(0|[1-9]\d{0,2})$/;
 const WIN = process.platform === "win32";
+/**
+ * A Worker secret holds at most 5 KB (https://developers.cloudflare.com/workers/platform/limits/#environment-variables),
+ * counted conservatively as 5,000 bytes: about 95 keys at roughly 52 bytes each. A Secrets Store
+ * secret holds 64 KB (all 256 IDs); its users update the store secret instead of running `upload`.
+ */
+const WORKER_SECRET_BYTES = 5_000;
+const WARN_BYTES = 4_500;
+const BYTES_PER_KEY = 53;
+const ringBytes = (ring) => Buffer.byteLength(JSON.stringify(ring), "utf8");
+
+/** One line on how full the ring is, as a Worker secret. */
+function sizeNote(ring) {
+	const bytes = ringBytes(ring);
+	const room = Math.max(0, Math.floor((WORKER_SECRET_BYTES - bytes) / BYTES_PER_KEY));
+	if (bytes > WORKER_SECRET_BYTES) {
+		return `⚠ ${bytes} bytes: too large for a Worker secret (5 KB). Move the ring to Secrets Store (64 KB), or remove IDs whose copies you accept losing (runbook step 6).`;
+	}
+	const note = `${bytes} of ${WORKER_SECRET_BYTES} bytes as a Worker secret (room for about ${room} more key${room === 1 ? "" : "s"}).`;
+	return bytes > WARN_BYTES ? `⚠ ${note} Plan the move to Secrets Store (64 KB) soon.` : note;
+}
 
 function fail(message) {
 	console.error(`✘ ${message}`);
@@ -72,6 +92,7 @@ switch (command) {
 		}
 		const ids = validate(ring);
 		console.log(`TOKEN_KEYS in ${file}: key IDs ${ids.join(", ")}. ID ${ids.at(-1)} seals new tokens; every ID decodes.`);
+		console.log(`Size: ${sizeNote(ring)}`);
 		break;
 	}
 
@@ -86,6 +107,7 @@ switch (command) {
 		else out = `${text}${text === "" || text.endsWith("\n") ? "" : "\n"}${line}\n`;
 		writeFileSync(file, out);
 		console.log(`✔ Added key ID ${next} to ${file} (IDs now ${validate(updated).join(", ")}).`);
+		console.log(`  Size: ${sizeNote(updated)}`);
 		console.log("  1. Back up the TOKEN_KEYS line in your password manager (Cloudflare can't show it again).");
 		console.log("  2. Upload it: npm run token-keys -- upload");
 		console.log("  3. Check it:  npm run hp -- whoami, then npm run hp -- decode <token>  →  \"version\": 2, \"keyId\": " + next);
@@ -95,6 +117,9 @@ switch (command) {
 	case "upload": {
 		if (!ring) fail(`no TOKEN_KEYS in ${file}: run \`npm run token-keys -- add\` first`);
 		const ids = validate(ring);
+		if (ringBytes(ring) > WORKER_SECRET_BYTES) {
+			fail(`the ring is ${ringBytes(ring)} bytes, over the 5 KB Worker secret limit: put it in Secrets Store (src/identity/README.md#secrets-store) or remove IDs whose copies you accept losing`);
+		}
 		console.log(`Uploading TOKEN_KEYS (key IDs ${ids.join(", ")}; ID ${ids.at(-1)} will seal) to the production Worker…`);
 		const r = spawnSync("npx", ["--no-install", "wrangler", "secret", "put", "TOKEN_KEYS", "--env="], {
 			input: JSON.stringify(ring),
