@@ -115,7 +115,8 @@ describe("MaintenanceWorkflow: expired flags (H1)", () => {
 		await env.MAINTENANCE.create({ id: "maint-waf-partial" });
 		const found = (await instance.waitForStepResult({ name: "find expired flags" })) as { blockIps: string[]; indicators: string[] };
 		expect([...found.blockIps].sort()).toEqual(["198.51.100.11", "198.51.100.12"]);
-		expect(found.indicators).toHaveLength(3);
+		// Only active blocks are listed: the expired pending row has no list item and is deleted by the stale steps.
+		expect(found.indicators).toHaveLength(2);
 		await instance.waitForStatus("complete");
 		expect(await instance.getOutput()).toMatchObject({ wafRemoval: { status: "error", removed: 1, failed: 1 }, purged: { deleted: 2, kept: 1 } });
 		expect(await getFlag(env.DB, "ip:198.51.100.11")).toMatchObject({ action: "block", status: "active" });
@@ -134,6 +135,40 @@ describe("MaintenanceWorkflow: expired flags (H1)", () => {
 		expect(await getFlag(env.DB, "ip:198.51.100.21")).not.toBeNull();
 		expect(await getFlag(env.DB, "ip:198.51.100.22")).not.toBeNull();
 		expect(await getFlag(env.DB, "ip:198.51.100.23")).toBeNull();
+	});
+});
+
+describe("MaintenanceWorkflow: expired-flag backlog (C3)", () => {
+	it("drains far more than one fixed batch of expired rows without a list item, in bounded steps", async () => {
+		// 2,500 expired pending trap flags: what a distributed crawl leaves behind in a few hours.
+		await env.DB.prepare(
+			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2500)
+			 INSERT INTO flags (indicator, kind, action, status, reason, source, source_ref, created_at, updated_at, expires_at, hits)
+			 SELECT 'ip:10.9.' || (i / 256) || '.' || (i % 256), 'ip', 'decoy', 'pending', 'test', 'trap', '0000000000000000', ?1, ?1, ?1, 1 FROM n`,
+		)
+			.bind(PAST)
+			.run();
+		await insertFlag("198.51.100.31", { action: "decoy", status: "pending", expiresAt: FUTURE });
+		await insertFlag("198.51.100.32", { action: "block", status: "active", expiresAt: PAST });
+
+		await using instance = await introspectWorkflowInstance(env.MAINTENANCE, "maint-backlog");
+		await instance.modify(async (m) => {
+			await m.disableSleeps();
+			await m.disableRetryDelays();
+			await m.mockStepResult({ name: "find foreign referer hosts" }, []);
+		});
+		await env.MAINTENANCE.create({ id: "maint-backlog" });
+		expect(await instance.waitForStepResult({ name: "delete stale flags #1" })).toBe(1000);
+		expect(await instance.waitForStepResult({ name: "delete stale flags #3" })).toBe(500);
+		await instance.waitForStatus("complete");
+		expect(await instance.getOutput()).toMatchObject({
+			expiredFlags: 2501,
+			expiredBlockedIps: 1,
+			wafRemoval: { status: "skipped", removed: 1, failed: 0 },
+			purged: { deleted: 2501, kept: 0 },
+		});
+		const left = await env.DB.prepare("SELECT indicator FROM flags").all<{ indicator: string }>();
+		expect(left.results.map((r) => r.indicator)).toEqual(["ip:198.51.100.31"]);
 	});
 });
 

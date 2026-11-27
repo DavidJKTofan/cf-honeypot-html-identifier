@@ -117,12 +117,23 @@ export function injectCarriers(response: Response, { token, cfg, origin }: Injec
 	});
 
 	const out = rewriter.transform(response);
-	const headers = new Headers(out.headers);
-	// The body is now per-visitor: never let a shared cache serve it to someone else.
-	headers.set("cache-control", "private, no-cache");
+	return new Response(out.body, { status: out.status, statusText: out.statusText, headers: privateHtmlHeaders(out.headers) });
+}
+
+/**
+ * Response headers for a per-visitor HTML page: never stored by a shared cache, and no `ETag`
+ * or `Content-Length` (the body differs on every request). `private, no-cache`, except that an
+ * origin's `no-store` is kept (`private, no-store`): an account or banking page must never land
+ * in a disk cache because we rewrote it. Also used for HEAD and 304 responses, so their headers
+ * match what the GET returns.
+ */
+export function privateHtmlHeaders(source: Headers): Headers {
+	const headers = new Headers(source);
+	const noStore = /(?:^|,)\s*no-store\s*(?:,|$)/i.test(source.get("cache-control") ?? "");
+	headers.set("cache-control", noStore ? "private, no-store" : "private, no-cache");
 	headers.delete("etag");
 	headers.delete("content-length");
-	return new Response(out.body, { status: out.status, statusText: out.statusText, headers });
+	return headers;
 }
 
 export interface FoundToken {

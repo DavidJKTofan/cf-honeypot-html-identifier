@@ -9,7 +9,7 @@
 import { handleAdmin } from "./admin/router";
 import { handleDiscordInteraction } from "./notify/discord/interactions";
 import { beaconScriptResponse, handleBeacon } from "./honeypot/beacon";
-import { injectCarriers } from "./identity/carriers";
+import { injectCarriers, privateHtmlHeaders } from "./identity/carriers";
 import { loadConfig } from "./core/config";
 import { writeEvent } from "./storage/analytics";
 import { collectSignals, isVerifiedBot } from "./identity/fingerprint";
@@ -74,6 +74,12 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 	response ??= await upstream(request, env);
 	// 206: a byte range of the page. Rewriting it would corrupt the range (and mint a token nobody sees).
 	if (!isHtmlResponse(response) || response.status === 206) return response;
+	// HEAD, 204 and 304 carry no body: a token there is never seen, so don't seal one or write an
+	// event (uptime monitors send HEAD all day). The headers still match what the GET returns.
+	if (request.method === "HEAD" || response.status === 204 || response.status === 304 || response.body === null) {
+		await response.body?.cancel();
+		return new Response(null, { status: response.status, statusText: response.statusText, headers: privateHtmlHeaders(response.headers) });
+	}
 
 	const token = await sealToken(s, await loadSealingKey(env));
 	writeEvent(env, "page", s);

@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { beaconScript } from "../src/honeypot/beacon";
-import { decodeCharRefs, injectCarriers, scanHtml } from "../src/identity/carriers";
+import { decodeCharRefs, injectCarriers, privateHtmlHeaders, scanHtml } from "../src/identity/carriers";
 import { loadConfig, type Config } from "../src/core/config";
 import { loadSealingKey, sealToken, tokenToBytes } from "../src/identity/token";
 import { decodeZeroWidth, encodeZeroWidth, findZeroWidthTokens } from "../src/identity/zerowidth";
@@ -50,6 +50,29 @@ describe("carrier injection and extraction", () => {
 		expect(text).not.toContain("​‌");
 		expect(headers.get("cache-control")).toBe("private, no-cache");
 		expect(headers.get("etag")).toBeNull();
+	});
+
+	it("keeps an origin's no-store (C1): a sensitive page must never become storable", async () => {
+		const t = await token();
+		const send = (cacheControl: string) =>
+			injectCarriers(new Response(PAGE, { headers: { "content-type": "text/html", "cache-control": cacheControl } }), {
+				token: t,
+				cfg: cfg("meta"),
+				origin: "https://honeypot.automatic-demo.com",
+			});
+		expect(send("no-store").headers.get("cache-control")).toBe("private, no-store");
+		expect(send("private, max-age=0, No-Store, must-revalidate").headers.get("cache-control")).toBe("private, no-store");
+		expect(send("public, max-age=600").headers.get("cache-control")).toBe("private, no-cache");
+		// A directive that merely contains the word is not no-store.
+		expect(send("x-no-store-hint").headers.get("cache-control")).toBe("private, no-cache");
+		expect(await send("no-store").text()).toContain(`content="${t}"`);
+	});
+
+	it("privateHtmlHeaders drops the ETag and keeps every other header", () => {
+		const h = privateHtmlHeaders(new Headers({ etag: '"abc"', "last-modified": "Tue, 01 Dec 2026 00:00:00 GMT", "cache-control": "public, max-age=60" }));
+		expect(h.get("etag")).toBeNull();
+		expect(h.get("last-modified")).toBe("Tue, 01 Dec 2026 00:00:00 GMT");
+		expect(h.get("cache-control")).toBe("private, no-cache");
 	});
 
 	it("extracts the same token from every enabled carrier", async () => {

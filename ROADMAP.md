@@ -1,6 +1,9 @@
 # Roadmap
 
-This file has five parts:
+This file has these parts:
+- **[What's next](#whats-next-2026-11-27)**: the priority order, in one list
+- **[Third review (2026-11-27)](#third-review-2026-11-27)**: three bugs fixed, and six open findings with a fix for each
+- **[Enterprise readiness review (2026-11-27)](#enterprise-readiness-review-2026-11-27)**: whether this scales to high-traffic Enterprise sites (token key rotation included), and what has to be built first
 - **[Second code review (2026-11-25)](#second-code-review-2026-11-25)**: bugs found in a second full review, all fixed, plus the open items from the first review that were closed with them (and the [follow-up of 2026-11-26](#follow-up-2026-11-26))
 - **[Code review findings (2026-11-24)](#code-review-findings-2026-11-24)**: every finding from the full code review, what was fixed, and a concrete fix for what is still open, so a later session can pick it up
 - **[Live test findings and scraper bypasses (2026-11-25)](#live-test-findings-and-scraper-bypasses-2026-11-25)**: what a live end-to-end test against the demo found, how a scraper would bypass the identifier, what was fixed, and designs for the rest
@@ -8,6 +11,126 @@ This file has five parts:
 - **[ideas for future development](#ideas)**, roughly in priority order
 
 Nothing under "Ideas" is built yet.
+
+## What's next (2026-11-27)
+
+1. ✅ **C1–C3**, fixed in this review: an origin's `no-store` is kept, HEAD and 304 responses mint no token, and the expired-flag purge keeps up with a large crawl.
+2. **Scale blockers for large sites:** [E3](#e3-take-d1-off-the-hot-path) (no D1 read per request) and [E6](#e6-trap-flags-from-analytics-engine-not-d1) (no D1 write per trap hit).
+3. **Key volume:** [E1](#e1-volume-free-sealing-token-version-3) (token version 3 with per-day subkeys) and [E2](#e2-staged-key-promotion) (staged key promotion).
+4. **Cost and operations:** [E5](#e5-invoke-the-worker-for-html-only) (Worker on HTML only) and [E4](#e4-split-the-edge-worker-from-the-control-plane) (separate edge and control Workers).
+5. **Open findings C4–C9** below.
+6. **Earlier open items:** [B11](#live-test-findings-and-scraper-bypasses-2026-11-25) IPv6 `/64` flags, B4 Browser Run capture, B5 a second discovery channel, risk-scored enforcement, the audit log, and an `env.staging` (L13).
+
+## Third review (2026-11-27)
+
+A third review read the request path, the token, maintenance, investigation and enforcement again. It checked them against the [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/), the [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), the [Workflows limits](https://developers.cloudflare.com/workflows/reference/limits/), [concurrency limits](https://developers.cloudflare.com/workflows/build/concurrency-limits/) and [schedules](https://developers.cloudflare.com/workflows/build/trigger-workflows/) (all three as configured), and the [Secrets Store](https://developers.cloudflare.com/secrets-store/manage-secrets/) and [Workers](https://developers.cloudflare.com/workers/platform/limits/) limits. Each fix has a test that fails without it.
+
+| ID | Sev | Finding | Fix | Status |
+|---|---|---|---|---|
+| C1 | M | `injectCarriers` replaced every `Cache-Control` with `private, no-cache`. An account or banking page sent with `no-store` became storable in the browser's disk cache | `privateHtmlHeaders()` keeps an origin's `no-store` (`private, no-store`); everything else gets `private, no-cache`, with no `ETag` | ✅ |
+| C2 | L | HEAD, 204 and 304 HTML responses sealed a token nobody sees and wrote a `page` row to Analytics Engine. Uptime monitors send HEAD all day | They get the same private headers as the GET, with no token and no event | ✅ |
+| C3 | M | Maintenance read at most 1,000 expired flags of any status per daily run. A distributed trap crawl can add 30 pending flags a minute per location (`TRAP_GLOBAL_LIMITER`), so the backlog and the table grew without bound (D1's 10 GB limit, `COUNT(*)` scans in the digest) | Only active IP blocks (which have a list item) go through the WAF removal. Every other expired row is deleted in steps of 1,000 rows (`deleteStaleExpiredFlags`), up to 100,000 per run | ✅ |
+| C4 | M | Expired-block removal looks up each IP with its own `findListItem` call: up to 1,000 calls in a row per run, against the [API rate limit](https://developers.cloudflare.com/fundamentals/api/reference/limits/) | Read the list once with `listItemsPage` (as reconcile does) and match IPs locally | ⬜ |
+| C5 | L | Reconcile reads at most 10 pages (5,000 items). Enterprise accounts hold up to 500,000 list items, so in a shared list, orphans on later pages are never removed | A dedicated list for this Worker (documented), or a cursor carried across runs | ⬜ |
+| C6 | L | With [Pseudo IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/) set to *Overwrite Headers*, `CF-Connecting-IP` holds a Class E address (`240.0.0.0/4`) and the real one is in `CF-Connecting-IPv6`. If the Worker sees the overwritten value (to verify on a test zone), tokens, flags and list items name the pseudo address and never match `ip.src` | Use `CF-Connecting-IPv6` only when `CF-Connecting-IP` is in `240.0.0.0/4`, with a test | ⬜ |
+| C7 | L | A rotation takes effect at once: the new highest ID seals immediately. During a [gradual deployment](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/), or with several Workers sharing a ring, a version that still holds the old ring can't open the new tokens, and the beacon drops them as invalid | [E2](#e2-staged-key-promotion). Until then: rotate only at 100% deployment (the runbook says so) | ⬜ |
+| C8 | L | If `TOKEN_KEYS_STORE.get()` fails and `TOKEN_KEYS` is stale, pages are sealed with an older ID, and decode can't open the newer tokens during the outage | Documented: leave `TOKEN_KEYS` unset when you use the store, or keep both in sync | ⬜ (docs ✅) |
+| C9 | L | The sealing key loads only after the origin response arrives: the ring JSON is parsed, every entry decoded, one key imported, plus a Secrets Store `get()`. That puts it on the time to first byte of every page | Start `loadSealingKey` in parallel with the upstream fetch, and measure `get()` latency (E10) | ⬜ |
+
+Doc corrections made with this review:
+- The README said static assets "skip all of it". The honeypot logic is skipped, but on a `/*` route the Worker is still invoked (and billed) for every asset: see [E5](#e5-invoke-the-worker-for-html-only).
+- "Deterministic per-visitor tokens" (Ideas) *reduce* the random-IV volume limit (fewer distinct messages per key); they don't remove it.
+
+## Enterprise readiness review (2026-11-27)
+
+**Short answer.** The design works for Enterprise customers (it needs [Bot Management](https://developers.cloudflare.com/bots/plans/bm-subscription/) anyway), and it runs today for sites up to about **10–50 million tokenized HTML responses a day**: enable [D1 read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/), protect the admin API with Access, and rotate the key ring monthly. It is **not ready for the largest sites** (about 100 million HTML responses a day and up, or many zones). Four things block them, in this order:
+1. **A D1 read on every HTML request.** Each D1 instance runs one query at a time, so a 1 ms query allows at most 1,000 queries a second, and read replication adds one replica per region (about six). Past that, D1 answers "overloaded". The lookup fails open, so decoys silently stop and POSTs slow down. Fix: [E3](#e3-take-d1-off-the-hot-path).
+2. **Trap writes that grow with the attacker's IP count.** The global trap limit is per location, so a crawl from residential proxies in every region can still write about 30 rows a minute in each of 300+ locations. Fix: [E6](#e6-trap-flags-from-analytics-engine-not-d1) (and C3, done).
+3. **Key volume.** At a billion pages a day, one key lasts four days. Rotation is manual, there are only 256 key IDs, and a Worker secret holds 95. Fix: [E1](#e1-volume-free-sealing-token-version-3) and [E2](#e2-staged-key-promotion).
+4. **The Worker runs on every asset request**, which bills requests that never need it. Fix: [E5](#e5-invoke-the-worker-for-html-only).
+
+### Key volume by traffic
+
+AES-GCM with random 96-bit IVs should seal at most 2³² (about 4.3 billion) tokens per key ([NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final), section 8.3). Count every token sealed with a key: pages for people and bots, decoys and trap hits, and every Worker or environment that shares the key. Give each environment and each Worker its own keys.
+
+| HTML responses a day | One key lasts | Rotate | 256 key IDs last | A Worker secret (about 95 IDs) lasts |
+|---|---|---|---|---|
+| 1 million | 11.8 years | yearly, as hygiene | centuries | centuries |
+| 10 million | 1.2 years | quarterly | more than 60 years | 24 years |
+| 100 million | 43 days | monthly (only 1.4× margin; every two weeks above about 70 million) | 21 years | 8 years |
+| 1 billion | 4.3 days | every 2 days | about 1.4 years | about 6 months |
+
+At 100 million a day, version 2 works with a monthly rotation done by hand. At a billion, it doesn't: someone would have to rotate every two days, every rotation through a Worker secret is a new deployment, and the IDs run out. Scheduled rotation through the Secrets Store API is no answer either. The Worker would need write credentials for its own keys, and Cloudflare can't show a secret again, so the operator's backup of the ring would be out of date after every automatic rotation. E1 removes the problem instead.
+
+### E1. Volume-free sealing (token version 3)
+
+Derive a subkey per UTC day from each ring key, so a ring key never seals more than one day of tokens directly:
+
+```
+subkey = HKDF-SHA256(ikm = ring key, salt = "cf-honeypot-html-identifier/v3", info = day as uint16)
+```
+
+Layout, still 68 bytes (91 characters), so carriers, `scanHtml`, the beacon's pattern and the zero-width carrier don't change:
+
+| Bytes | Field |
+|---|---|
+| 0–1 | version (`3`) and ring key ID, XORed with IV bytes 0–1 (as in version 2) |
+| 2–13 | IV (12 random bytes) |
+| 14–15 | day number (days since 2026-01-01 UTC, uint16: 179 years), XORed with IV bytes 2–3 |
+| 16–51 | ciphertext of the 36-byte payload |
+| 52–67 | GCM tag |
+
+The payload is 36 bytes: seconds of the day (17 bits) and bot score (7 bits) in 3 bytes; IP (16); ASN (4); country and colo (30 bits) plus `verifiedBot` and `jsDetection` in 4 bytes; a flags byte (Bot Management present, 7 spare bits); Ray ID (8). The additional data is a version 3 label (`cf-honeypot-html-identifier/v3`) plus the unmasked header (version, key ID, day), so none of it can be altered.
+
+- **Ceiling:** 2³² tokens a day per ring key (about 50,000 a second, sustained). Beyond that, give each Worker or zone its own ring key.
+- **Rotation:** ring IDs change only as hygiene (yearly) or after a leak, so 256 IDs last centuries, the backup stays simple, and no automation is needed. This replaces the "Key rotation automation" idea; the retired-key alert stays useful.
+- **Cost:** one HKDF derivation per seal and per open ([Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/) supports HKDF), cached for the request or step.
+- **Trade-off:** anyone who knows the scheme can read the day a token was issued, just as they can read the key ID. That is camouflage, not secrecy.
+- **Rollout:** opt-in with a `TOKEN_VERSION` var at first. Versions 1 and 2 keep decoding. Tests: the 68-byte length, the day boundary, cross-decoding of versions 1–3, and the fallback when a token only looks like a version 3 header.
+
+### E2. Staged key promotion
+
+Let a key be distributed before it seals. Accept `{"seal": 3, "keys": {"3": "…", "2": "…"}}` alongside today's plain format (where the highest ID seals). Roll the new key out to every version and Worker, then promote it. Add a grace window to the `token_retired_key` check, so tokens issued within a few minutes of a promotion aren't reported. Needed for [gradual deployments](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/), for E4, and to close C7.
+
+### E3. Take D1 off the hot path
+
+This turns M7 from an optimization into a blocker; see the D1 [throughput guidance](https://developers.cloudflare.com/d1/platform/limits/).
+- **Design:** decoy IPs go into a second [WAF IP list](https://developers.cloudflare.com/waf/tools/lists/custom-lists/), maintained like the block list (one bulk write per decision, reconcile). A [request header transform rule](https://developers.cloudflare.com/rules/transform/request-header-modification/) first removes any client-sent `x-hp-decoy` header, then sets it when `ip.src in $honeypot_decoy`. The Worker then needs no storage read at all. Check that your plan allows lists in that rule phase (they are not allowed in response header rules).
+- **JA4 decoys** are rare: put them in a rule expression through the Rulesets API, or keep the D1 lookup for requests that carry a JA4 flagged in the last minute.
+- **Fallback design:** a per-location [Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/) bit for "no active decoy flags" (30–60 s TTL), so most requests skip D1.
+
+### E4. Split the edge Worker from the control plane
+
+A lean **edge Worker** on the site route seals, injects and checks decoys, with low log sampling and [gradual deployments](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/). A **control Worker** takes the more specific routes (`ADMIN_PREFIX`, the beacon, the Discord endpoint) and runs the Workflows, with full logging. Why: [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) caps an account at 5 billion logs a day and then samples 1%. Head sampling on a high-traffic Worker would also drop rare events such as `token_retired_key` and trap hits. The split also separates CPU limits, deploy cadence and blast radius. It needs E2, because both Workers must share keys.
+
+### E5. Invoke the Worker for HTML only
+
+On a `/*` route, every image, script and stylesheet invokes (and bills) the Worker, even though the honeypot logic skips it. Add [routes with no Worker](https://developers.cloudflare.com/workers/configuration/routing/routes/) for asset path prefixes (route patterns can't match extensions, so this needs asset paths such as `/static/*`). Hotlink detection then moves to maintenance: query [GraphQL Analytics](https://developers.cloudflare.com/analytics/graphql-api/) `httpRequestsAdaptiveGroups` grouped by `clientRefererHost` for asset requests, instead of a Worker event per asset.
+
+### E6. Trap flags from Analytics Engine, not D1
+
+Every trap hit already writes a `trap` event to Analytics Engine. Drop the D1 write from the public path. Instead, an hourly maintenance step promotes the top trap IPs from Analytics Engine (most hits, most paths, lowest bot score) to pending flags. Approvals arrive as a daily digest anyway, so nothing is lost, and the last public D1 write that grows with the attacker's IP count goes away.
+
+### E7. Several zones and hosts
+
+- `CANONICAL_HOSTS` with suffix matching (`.example.com`), and per-host configuration (carriers, trap path, meta name). This is the "Multi-site" idea under Ideas.
+- An account-level [WAF custom ruleset](https://developers.cloudflare.com/waf/account/custom-rulesets/) for the block rule, so every zone enforces the list.
+
+### E8. Data residency and retention
+
+- Workflows can now be pinned to a [jurisdiction](https://developers.cloudflare.com/workflows/reference/data-location/) (`eu`, `us`, `fedramp`; fixed when the Workflow is created). D1 and R2 have jurisdictions too, and Workers Logs follow the account's [Customer Metadata Boundary](https://developers.cloudflare.com/data-localization/metadata-boundary/).
+- Confirm where Analytics Engine stores data. If it can't be localized, store less per page (data minimization under Ideas).
+- Set `default_retention` on both Workflows (now a [Wrangler setting](https://developers.cloudflare.com/workers/wrangler/configuration/#workflows)), and add [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lifecycles/) with [bucket locks](https://developers.cloudflare.com/r2/buckets/bucket-locks/) for evidence that must be kept.
+
+### E9. Enterprise operations
+
+These are under Ideas already; for Enterprise they come first: an `env.staging` (L13), Terraform for the lists, rules, Access and Secrets Store, an audit log exported through [Logpush](https://developers.cloudflare.com/logs/logpush/) to the customer's SIEM, an Access-protected approval UI, Slack or Teams adapters, and a two-person rule for blocks and abuse reports.
+
+### E10. Load test, service levels and a cost model
+
+- Measure HTMLRewriter CPU on 1–2 MB pages, the added p99 time to first byte, D1 latency and Secrets Store `get()` latency. Publish the numbers in the README.
+- A cost model from current pricing pages, for example: [Workers](https://developers.cloudflare.com/workers/platform/pricing/) requests cost $0.30 per million over the included amount, and [Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/pricing/) data points $0.25 per million (not billed yet). Enterprise contracts differ.
+- The levers are selective tokenization, data minimization (both under Ideas) and E5.
 
 ## Second code review (2026-11-25)
 
@@ -55,7 +178,7 @@ The review checked the code against the [Workers best practices](https://develop
 | M4 | The `form` carrier shadowed real `_csrf` fields | ✅ |
 | M5 | Evidence capture failed on pages over 2 MiB | ✅ |
 | M6 | D1 read replication was assumed but never enabled | ✅ (docs) |
-| M7 | A D1 read on every HTML request is the scaling ceiling | ⬜ |
+| M7 | A D1 read on every HTML request is the scaling ceiling | ⬜ (an Enterprise blocker: [E3](#e3-take-d1-off-the-hot-path)) |
 | M8 | AES-GCM key volume, and only one previous key for decoding | ✅ (rotation still manual) |
 | M9 | Workflow steps weren't idempotent | ✅ |
 | L1–L19 | D1, Workflow, privacy, robots.txt, tooling and docs hardening | see below |
@@ -98,7 +221,7 @@ The review checked the code against the [Workers best practices](https://develop
 2. Cache negative lookups per indicator in the Cache API for 30–60 s.
 3. Put decoy IPs in a second [WAF IP list](https://developers.cloudflare.com/waf/tools/lists/custom-lists/) and let a [request header transform rule](https://developers.cloudflare.com/rules/transform/request-header-modification/) set a header such as `x-hp-decoy: 1` when `ip.src in $honeypot_decoy`, if your plan allows lists in that rule type. The Worker then needs no D1 read at all.
 
-Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/metrics-analytics/) and Workers CPU time under load.
+Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/metrics-analytics/) and Workers CPU time under load. For high-traffic sites this is a blocker, and option 3 is the recommended design: see [E3](#e3-take-d1-off-the-hot-path).
 
 **M8. AES-GCM key volume.** ✅ With random 96-bit IVs, [NIST SP 800-38D](https://csrc.nist.gov/pubs/sp/800/38/d/final) limits one key to about 2³² encryptions. That's roughly 43 days at 100 million pages a day. An IV collision allows forged tokens, which could frame someone else.
 - *Was:* `loadTokenKeys` kept only `TOKEN_KEY` and one `TOKEN_KEY_PREVIOUS`, and decode tried each key in turn, so rotating often lost the ability to decode older copies.
@@ -107,7 +230,7 @@ Measure first: [D1 metrics](https://developers.cloudflare.com/d1/observability/m
   - The optional `TOKEN_KEYS` secret holds a JSON key ring (`{"3":"<base64>","2":"…"}`). The highest ID seals, every ID decodes, and malformed entries are logged and skipped. A `TOKEN_KEYS_STORE` [Secrets Store](https://developers.cloudflare.com/secrets-store/) binding can replace it, so a rotation needs no redeploy.
   - Version 1 tokens still decode with `TOKEN_KEY` and `TOKEN_KEY_PREVIOUS`. Without a ring, the Worker keeps sealing version 1.
   - The beacon, admin decode and the Workflow log `token_retired_key` when a token from a retired key shows up. The [rotation runbook](src/identity/README.md#key-rotation) explains how to read it.
-- *Open:* rotation is manual, though `npm run token-keys -- add` / `upload` (2026-11-26) removes the hand-edited JSON. The demo uses the ring since 2026-11-26. A Worker secret caps it at about 95 keys (5 KB); Secrets Store holds all 256. See "Key rotation automation" under [Operations and safety](#operations-and-safety).
+- *Open:* rotation is manual, though `npm run token-keys -- add` / `upload` (2026-11-26) removes the hand-edited JSON. The demo uses the ring since 2026-11-26. A Worker secret caps it at about 95 keys (5 KB); Secrets Store holds all 256. That is enough up to about 100 million pages a day; beyond that, see [E1](#e1-volume-free-sealing-token-version-3) (per-day subkeys) and [E2](#e2-staged-key-promotion).
 
 **M9. Workflow steps weren't idempotent.** ✅ A retry after a failed D1 write re-posted the Discord message, and one failing host redid every lead upsert. Now "notify reviewers" and "save notification ref" are separate steps (and the first skips if a ref exists), and maintenance makes one step per lead host. See [rules of Workflows](https://developers.cloudflare.com/workflows/build/rules-of-workflows/).
 
@@ -255,9 +378,10 @@ It touches every enforcement path, so it needs its own change with tests for eac
    - **Workflow instance state** ([7 days by default](https://developers.cloudflare.com/workflows/reference/limits/) on Workers Paid) and **R2 evidence** (no [lifecycle rule](https://developers.cloudflare.com/r2/buckets/object-lifecycles/) yet) also hold IPs.
    - **Before launch:** define a legal basis, privacy notice, retention policy and a process for data-subject requests. Consider a data-minimization mode (see Ideas).
 4. **Cost and caching of tokenizing every page.**
-   - Every HTML response is rewritten and gets `Cache-Control: private, no-cache`, so downstream shared caches and some browser caching stop working for HTML. The edge cache in front of your origin still works, because the [Worker runs before it](https://developers.cloudflare.com/cache/interaction-cloudflare-products/workers/).
+   - Every HTML response is rewritten and gets `Cache-Control: private, no-cache` (or `private, no-store` when the origin sent `no-store`, C1), so downstream shared caches and some browser caching stop working for HTML. The edge cache in front of your origin still works, because the [Worker runs before it](https://developers.cloudflare.com/cache/interaction-cloudflare-products/workers/).
    - [HTMLRewriter](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) adds CPU per page.
-   - The flag lookup is one D1 read per non-static request. For GET it runs in parallel with the origin fetch; for POST it runs first and adds latency (M7). Enable [read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/) first (M6).
+   - The flag lookup is one D1 read per non-static request. For GET it runs in parallel with the origin fetch; for POST it runs first and adds latency (M7). Enable [read replication](https://developers.cloudflare.com/d1/best-practices/read-replication/) first (M6); high-traffic sites need [E3](#e3-take-d1-off-the-hot-path).
+   - On a `/*` route the Worker is invoked, and billed, for every static asset too ([E5](#e5-invoke-the-worker-for-html-only)).
    - Measure under load before launch.
 5. **Key management.** Anyone holding a token key can forge tokens and frame others. Use separate keys per environment, the `TOKEN_KEYS` ring with the [rotation runbook](src/identity/README.md#key-rotation) (M8), and least-privilege access to secrets (for example the `TOKEN_KEYS_STORE` [Secrets Store](https://developers.cloudflare.com/secrets-store/) binding).
 6. **Detectability.**
@@ -290,7 +414,7 @@ It touches every enforcement path, so it needs its own change with tests for eac
 - **More notifier adapters.** Slack ([Block Kit, signing-secret verification](https://docs.slack.dev/authentication/verifying-requests-from-slack)) and Telegram ([inline keyboards, `secret_token` webhooks](https://core.telegram.org/bots/api)) behind the existing `Notifier` interface. A [design sketch is in src/notify/README.md](src/notify/README.md#using-another-channel-slack-telegram-).
 - **Discord upgrades.** Slash commands (`/honeypot leads`), a thread per case, and reminders before a case expires.
 - **Rule-based auto-approval (opt-in).** A policy engine for narrow, well-understood cases, for example a trap hit with Bot Management score < 5 from a hosting ASN. Every auto-approval would be logged and reversible.
-- **Key rotation automation.** The key ring, key IDs and retired-key logs exist (M8), and `npm run token-keys` adds and uploads keys without showing them. Still to do: a scheduled job that adds a new `TOKEN_KEYS_STORE` entry each month through the [Secrets Store API](https://developers.cloudflare.com/api/resources/secrets_store/), and an alert (a Workers Logs alert, or a Discord message) on `token_retired_key` events whose `newestIssuedAt` is later than that key's retirement.
+- **Retired-key alert.** The key ring, key IDs and retired-key logs exist (M8), and `npm run token-keys` adds and uploads keys without showing them. Still to do: an alert (a Workers Logs alert, or a Discord message) on `token_retired_key` events whose `newestIssuedAt` is later than that key's retirement, with the grace window from [E2](#e2-staged-key-promotion). *Superseded:* scheduled rotation through the [Secrets Store API](https://developers.cloudflare.com/api/resources/secrets_store/). It would give the Worker write access to its own keys and leave the operator's backup of the ring out of date; [E1](#e1-volume-free-sealing-token-version-3) removes the need for frequent rotation instead.
 - **Infrastructure as code.** [Terraform](https://developers.cloudflare.com/terraform/) for the WAF list, block rule, Discord skip rules and Worker. They're currently created through the API by hand.
 - **Staging and CI.** An `env.staging` ([Wrangler environments](https://developers.cloudflare.com/workers/wrangler/environments/)) with its own keys and resources; GitHub Actions for typecheck, tests and lint is done (L12, L13); Dependabot or Renovate; [gradual deployments](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/) for risky changes.
 
@@ -298,11 +422,11 @@ It touches every enforcement path, so it needs its own change with tests for eac
 - **Selective tokenization.** Modes `all` / `suspicious` ([bot score](https://developers.cloudflare.com/bots/concepts/bot-score/) < N, or no [JavaScript detection](https://developers.cloudflare.com/cloudflare-challenges/challenge-types/javascript-detections/)) / `sampled`. These lower CPU use and keep normal visitors' HTML cacheable.
 - **Data minimization.** For ordinary page views, store a salted hash of the IP in Analytics Engine, and keep full detail only for trap, decoy and beacon events.
 - **Retention controls.** Set the Workflow [`retention`](https://developers.cloudflare.com/workflows/build/workers-api/) option, add [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lifecycles/) (with [bucket locks](https://developers.cloudflare.com/r2/buckets/bucket-locks/) for evidence you must keep), and provide data-subject request tooling (find and delete by IP or Ray ID).
-- **Avoid the per-request flag lookup.** See M7.
+- **Avoid the per-request flag lookup.** See M7 and [E3](#e3-take-d1-off-the-hot-path).
 - **Load testing and profiling.** CPU per page for HTMLRewriter, D1 latency percentiles, and a Grafana dashboard on [Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/grafana/).
 
 ### Detection quality
-- **Deterministic per-visitor tokens.** A SIV-style construction would give one visitor the same token per day. Diffing two fetches then reveals nothing, but each token is no longer tied to a single request. It would also remove the random-IV volume limit (M8).
+- **Deterministic per-visitor tokens.** A SIV-style construction would give one visitor the same token per day. Diffing two fetches then reveals nothing, but each token is no longer tied to a single request. It would also reduce the random-IV volume limit (M8), since one key then seals fewer distinct messages; it doesn't remove it ([E1](#e1-volume-free-sealing-token-version-3) does).
 - **Carriers that survive clean-up.** Put the token where cleaners and AI pipelines usually keep it: a cache-busting query string on stylesheet and image URLs (`/styles.css?v=<token>`), a framework-style `data-*` attribute on content elements, or a JSON-LD `@id`. `scanHtml` would then need to match tokens inside attribute values, not only whole values.
 - **CSP nonce support.** Reuse the page's script nonce for the beacon, or turn the beacon off automatically under a strict CSP.
 - **Live-mirror signals in the Worker.** Flag `X-Forwarded-Host`, `Forwarded` or `Origin` headers that name a foreign host, and many-User-Agents-per-IP patterns.
@@ -319,4 +443,5 @@ It touches every enforcement path, so it needs its own change with tests for eac
 - **Signed evidence manifests.** Sign `report.json` (hashes of every artifact) so the bundle's integrity can be checked later.
 
 ### Scale
-- **Multi-site.** Per-host config (carriers, paths, canonical hosts) for one Worker in front of several zones.
+- **Multi-site.** Per-host config (carriers, paths, canonical hosts) for one Worker in front of several zones. See [E7](#e7-several-zones-and-hosts).
+- **Enterprise readiness.** The scale blockers and their designs are in the [Enterprise readiness review](#enterprise-readiness-review-2026-11-27).

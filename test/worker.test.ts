@@ -1,6 +1,6 @@
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 
 const BASE = "https://honeypot.automatic-demo.com";
@@ -71,6 +71,50 @@ describe("page tokenization", () => {
 		expect(res.status).toBe(206);
 		expect(res.headers.get("content-range")).toBe("bytes 0-52/400");
 		expect(await res.text()).toBe(partial);
+	});
+
+	/** Run the Worker against a stubbed origin response, counting Analytics Engine writes. */
+	async function viaOrigin(init: RequestInit, origin: () => Response): Promise<{ res: Response; writes: number }> {
+		const writeDataPoint = vi.fn();
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(
+			new Request(`${BASE}/`, { ...init, headers: { "cf-connecting-ip": "198.51.100.25", ...(init.headers as Record<string, string> | undefined) } }) as Request<
+				unknown,
+				IncomingRequestCfProperties
+			>,
+			{ ...env, ASSETS: { fetch: async () => origin() } as unknown as Fetcher, EVENTS: { writeDataPoint } as unknown as AnalyticsEngineDataset },
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+		return { res, writes: writeDataPoint.mock.calls.length };
+	}
+
+	const originHeaders = { "content-type": "text/html", etag: '"v1"', "cache-control": "public, max-age=600", "last-modified": "Tue, 01 Dec 2026 00:00:00 GMT" };
+
+	it("HEAD seals no token and writes no event, with the same private headers as the GET (C2)", async () => {
+		const { res, writes } = await viaOrigin({ method: "HEAD" }, () => new Response(null, { headers: originHeaders }));
+		expect(res.status).toBe(200);
+		expect(res.headers.get("cache-control")).toBe("private, no-cache");
+		expect(res.headers.get("etag")).toBeNull();
+		expect(res.headers.get("last-modified")).toBe(originHeaders["last-modified"]);
+		expect(await res.text()).toBe("");
+		expect(writes).toBe(0);
+	});
+
+	it("a 304 seals no token and writes no event (C2)", async () => {
+		const { res, writes } = await viaOrigin({ headers: { "if-modified-since": originHeaders["last-modified"] } }, () => new Response(null, { status: 304, headers: originHeaders }));
+		expect(res.status).toBe(304);
+		expect(res.headers.get("cache-control")).toBe("private, no-cache");
+		expect(res.headers.get("etag")).toBeNull();
+		expect(writes).toBe(0);
+	});
+
+	it("a GET still gets a token and one page event, and an origin's no-store is kept (C1)", async () => {
+		const page = "<!doctype html><html><head><title>t</title></head><body><p>Account</p></body></html>";
+		const { res, writes } = await viaOrigin({}, () => new Response(page, { headers: { ...originHeaders, "cache-control": "no-store" } }));
+		expect(res.headers.get("cache-control")).toBe("private, no-store");
+		expect(metaToken(await res.text())).toHaveLength(91);
+		expect(writes).toBe(1);
 	});
 
 	it("passes static assets through untouched", async () => {
