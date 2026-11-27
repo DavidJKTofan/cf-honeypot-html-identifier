@@ -4,8 +4,8 @@
  *
  * Fails when:
  *   1. the code deployed to production is older than the last commit on `main` that changes
- *      what gets deployed (src/, public/, migrations/, wrangler.jsonc, package*.json), or
- *      production was rolled back; or
+ *      what gets deployed (src/, public/, migrations/, wrangler.jsonc, package*.json, but not
+ *      the folder README.md files, which are never deployed), or production was rolled back; or
  *   2. the remote D1 database has migrations that haven't been applied.
  *
  * Read-only apart from `wrangler d1 migrations list`, which creates the d1_migrations table if
@@ -17,6 +17,13 @@
 import { spawnSync } from "node:child_process";
 
 const DEPLOYED_PATHS = ["src", "public", "migrations", "wrangler.jsonc", "package.json", "package-lock.json"];
+/**
+ * Never deployed: the folder READMEs under src/ (Wrangler bundles only imported modules) and
+ * public/ (`.assetsignore` lists README.md, so it isn't a Static Asset). A git pathspec
+ * exclusion, so a README-only commit doesn't count as drift. Only README.md: any other file in
+ * public/, Markdown included, is served.
+ */
+const NOT_DEPLOYED = [":(exclude,glob)**/README.md"];
 const WIN = process.platform === "win32";
 
 function run(cmd, args, { timeout = 120_000 } = {}) {
@@ -47,7 +54,7 @@ function mainCommit() {
 	const ref = hasOrigin ? "origin/main" : "main";
 	if (!fetched.ok) console.log(`! couldn't fetch origin/main; comparing with the local ${ref}`);
 	// --first-parent: a merged PR counts at its merge time, not at its branch commits' times.
-	const log = git(["log", "-1", "--first-parent", "--format=%h%x09%cI%x09%s", ref, "--", ...DEPLOYED_PATHS]);
+	const log = git(["log", "-1", "--first-parent", "--format=%h%x09%cI%x09%s", ref, "--", ...DEPLOYED_PATHS, ...NOT_DEPLOYED]);
 	const [sha, iso, ...subject] = log.stdout.trim().split("\t");
 	if (!log.ok || !sha || !iso) return { ref, error: log.stderr || "no commit found" };
 	return { ref, sha, time: new Date(iso), subject: subject.join("\t") };
