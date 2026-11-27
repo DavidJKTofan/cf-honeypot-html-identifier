@@ -195,7 +195,7 @@ The test also surfaced the findings below. The bypass list combines what the tes
 
 ### Open items, with designs
 
-**T1 Deploy drift check.** ✅ `npm run doctor` (`scripts/doctor.mjs`) compares the newest code deployment from `npx wrangler deployments list --json` with the last commit on `main` that changes what gets deployed, and fails on a rollback or when `npx wrangler d1 migrations list DB --remote` lists pending migrations. Secret-change deployments are skipped, because they keep the deployed code. Still open: run it in [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) or a scheduled CI job, which needs a read-only API token as a CI secret.
+**T1 Deploy drift check.** ✅ `npm run doctor` (`scripts/doctor.mjs`) compares the newest code deployment from `npx wrangler deployments list --json` with the last commit on `main` that changes what gets deployed (folder `README.md` files excluded), and fails on a rollback or when `npx wrangler d1 migrations list DB --remote` lists pending migrations. Secret-change deployments are skipped, because they keep the deployed code. Still open: run it in [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) or a scheduled CI job, which needs a read-only API token as a CI secret.
 
 **B1/B2 Diff- and signature-resistant carriers.**
 - Deterministic per-visitor tokens (already an Idea under *Detection quality*) make a two-fetch diff show nothing.

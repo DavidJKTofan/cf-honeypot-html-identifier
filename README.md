@@ -423,7 +423,7 @@ Before a live test, check that production matches `main`:
 npm run doctor
 ```
 
-It fails if the deployed code is older than the last commit on `main` that changes what gets deployed (deployments made by `wrangler secret put` don't count), if production was rolled back, or if the remote database has unapplied migrations.
+It fails if the deployed code is older than the last commit on `main` that changes what gets deployed (folder `README.md` files don't count, and neither do deployments made by `wrangler secret put`), if production was rolled back, or if the remote database has unapplied migrations.
 
 ### Optional: Cloudflare API integrations and WAF blocking
 
