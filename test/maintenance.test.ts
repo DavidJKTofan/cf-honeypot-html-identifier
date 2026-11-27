@@ -138,37 +138,60 @@ describe("MaintenanceWorkflow: expired flags (H1)", () => {
 	});
 });
 
+/**
+ * Seed `count` expired flags in one statement (a recursive CTE), the way a distributed crawl
+ * leaves them behind: unique indicators from `prefix` plus a hex counter.
+ */
+async function seedExpired(count: number, f: { prefix: string; kind: "ip" | "ja4"; action: FlagAction; status: FlagStatus }): Promise<void> {
+	await env.DB.prepare(
+		`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+		 INSERT INTO flags (indicator, kind, action, status, reason, source, source_ref, created_at, updated_at, expires_at, hits)
+		 SELECT printf('%s%x', ?2, i), ?3, ?4, ?5, 'trap hit (bot score 1)', 'trap', '0000000000000000', ?6, ?6, ?6, 1 FROM n`,
+	)
+		.bind(count, f.prefix, f.kind, f.action, f.status, PAST)
+		.run();
+}
+
 describe("MaintenanceWorkflow: expired-flag backlog (C3)", () => {
-	it("drains far more than one fixed batch of expired rows without a list item, in bounded steps", async () => {
-		// 2,500 expired pending trap flags: what a distributed crawl leaves behind in a few hours.
-		await env.DB.prepare(
-			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2500)
-			 INSERT INTO flags (indicator, kind, action, status, reason, source, source_ref, created_at, updated_at, expires_at, hits)
-			 SELECT 'ip:10.9.' || (i / 256) || '.' || (i % 256), 'ip', 'decoy', 'pending', 'test', 'trap', '0000000000000000', ?1, ?1, ?1, 1 FROM n`,
-		)
-			.bind(PAST)
-			.run();
-		await insertFlag("198.51.100.31", { action: "decoy", status: "pending", expiresAt: FUTURE });
-		await insertFlag("198.51.100.32", { action: "block", status: "active", expiresAt: PAST });
+	it("drains a backlog far larger than one batch, survives a transient D1 error, and never touches an IP block whose list item is still there", async () => {
+		// 2,500 expired rows without a WAF list item: pending trap flags (IPv6, as residential proxies
+		// rotate them), rejected ones, expired decoys and expired JA4 blocks (enforced by the Worker only).
+		await seedExpired(2000, { prefix: "ip:2001:db8::", kind: "ip", action: "decoy", status: "pending" });
+		await seedExpired(300, { prefix: "ip:2001:db8:1::", kind: "ip", action: "decoy", status: "rejected" });
+		await seedExpired(150, { prefix: "ip:2001:db8:2::", kind: "ip", action: "decoy", status: "active" });
+		await seedExpired(50, { prefix: "ja4:t13d1516h2_8daaf6152771_", kind: "ja4", action: "block", status: "active" });
+		// An expired IP block whose list removal keeps failing: it must survive every stale chunk.
+		await insertFlag("203.0.113.50", { action: "block", status: "active", expiresAt: PAST });
+		// Unexpired rows of each kind stay.
+		await insertFlag("203.0.113.51", { action: "decoy", status: "pending", expiresAt: FUTURE });
+		await insertFlag("203.0.113.52", { action: "decoy", status: "active", expiresAt: FUTURE });
+		await insertFlag("203.0.113.53", { action: "block", status: "active", expiresAt: FUTURE });
 
 		await using instance = await introspectWorkflowInstance(env.MAINTENANCE, "maint-backlog");
 		await instance.modify(async (m) => {
 			await m.disableSleeps();
 			await m.disableRetryDelays();
 			await m.mockStepResult({ name: "find foreign referer hosts" }, []);
+			await m.mockStepError({ name: "remove expired WAF list items" }, new Error("lists api down (test)"));
+			// The transient D1 error the retry guide names: the retried chunk must not double count.
+			await m.mockStepError({ name: "delete stale flags #2" }, new Error("D1_ERROR: Network connection lost."), 1);
 		});
 		await env.MAINTENANCE.create({ id: "maint-backlog" });
+
 		expect(await instance.waitForStepResult({ name: "delete stale flags #1" })).toBe(1000);
+		expect(await instance.waitForStepResult({ name: "delete stale flags #2" })).toBe(1000);
 		expect(await instance.waitForStepResult({ name: "delete stale flags #3" })).toBe(500);
 		await instance.waitForStatus("complete");
 		expect(await instance.getOutput()).toMatchObject({
 			expiredFlags: 2501,
 			expiredBlockedIps: 1,
-			wafRemoval: { status: "skipped", removed: 1, failed: 0 },
-			purged: { deleted: 2501, kept: 0 },
+			wafRemoval: { status: "error", removed: 0, failed: 1 },
+			purged: { deleted: 2500, kept: 1 },
 		});
-		const left = await env.DB.prepare("SELECT indicator FROM flags").all<{ indicator: string }>();
-		expect(left.results.map((r) => r.indicator)).toEqual(["ip:198.51.100.31"]);
+
+		const left = await env.DB.prepare("SELECT indicator FROM flags ORDER BY indicator").all<{ indicator: string }>();
+		expect(left.results.map((r) => r.indicator)).toEqual(["ip:203.0.113.50", "ip:203.0.113.51", "ip:203.0.113.52", "ip:203.0.113.53"]);
+		expect(await getFlag(env.DB, "ip:203.0.113.50")).toMatchObject({ action: "block", status: "active" });
 	});
 });
 

@@ -52,7 +52,7 @@ describe("carrier injection and extraction", () => {
 		expect(headers.get("etag")).toBeNull();
 	});
 
-	it("keeps an origin's no-store (C1): a sensitive page must never become storable", async () => {
+	it("keeps an origin's no-store (C1), for the headers real frameworks send", async () => {
 		const t = await token();
 		const send = (cacheControl: string) =>
 			injectCarriers(new Response(PAGE, { headers: { "content-type": "text/html", "cache-control": cacheControl } }), {
@@ -60,11 +60,26 @@ describe("carrier injection and extraction", () => {
 				cfg: cfg("meta"),
 				origin: "https://honeypot.automatic-demo.com",
 			});
-		expect(send("no-store").headers.get("cache-control")).toBe("private, no-store");
-		expect(send("private, max-age=0, No-Store, must-revalidate").headers.get("cache-control")).toBe("private, no-store");
-		expect(send("public, max-age=600").headers.get("cache-control")).toBe("private, no-cache");
-		// A directive that merely contains the word is not no-store.
-		expect(send("x-no-store-hint").headers.get("cache-control")).toBe("private, no-cache");
+		const noStore = {
+			"Django never_cache": "max-age=0, no-cache, no-store, must-revalidate, private",
+			"PHP sessions (nocache limiter)": "no-store, no-cache, must-revalidate",
+			"Next.js dynamic page": "private, no-cache, no-store, max-age=0, must-revalidate",
+			"Rails, mixed case": "No-Store",
+		};
+		for (const [origin, value] of Object.entries(noStore)) {
+			expect(send(value).headers.get("cache-control"), origin).toBe("private, no-store");
+		}
+		const cacheable = {
+			"Workers Static Assets": "public, max-age=0, must-revalidate",
+			"a CDN-cached page": "public, max-age=600, s-maxage=3600",
+			"an empty header": "",
+			// An extension directive that only contains the word is not no-store.
+			"x-no-store-hint": "x-no-store-hint, max-age=60",
+		};
+		for (const [origin, value] of Object.entries(cacheable)) {
+			expect(send(value).headers.get("cache-control"), origin).toBe("private, no-cache");
+		}
+		// Still a tokenized page: the header change doesn't skip the rewrite.
 		expect(await send("no-store").text()).toContain(`content="${t}"`);
 	});
 
