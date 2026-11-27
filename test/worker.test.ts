@@ -1,6 +1,6 @@
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 
 const BASE = "https://honeypot.automatic-demo.com";
@@ -83,6 +83,105 @@ describe("page tokenization", () => {
 		expect(await (await get("/robots.txt", "198.51.100.23")).text()).toContain("Disallow: /catalog/full-export");
 		const js = await get("/assets/js/rum.js", "198.51.100.23");
 		expect(js.headers.get("content-type")).toContain("javascript");
+	});
+});
+
+/**
+ * C1 and C2, as integration tests against the real bindings: requests go through
+ * `exports.default.fetch()`, the demo origin is the real Static Assets binding (which sends an
+ * ETag, `public, max-age=0, must-revalidate`, answers HEAD without a body and If-None-Match with
+ * a real 304), and Analytics Engine writes are counted with a spy that calls through to the real
+ * binding. Every "no event" assertion has a GET in the same test as its positive control, so it
+ * can't pass just because the spy sees nothing.
+ */
+describe("bodiless responses and origin cache headers (C1, C2)", () => {
+	const page = (ip: string, init: RequestInit = {}) =>
+		exports.default.fetch(`${BASE}/`, { ...init, headers: { "cf-connecting-ip": ip, ...(init.headers as Record<string, string> | undefined) } });
+
+	afterEach(() => vi.restoreAllMocks());
+
+	it("HEAD seals no token and writes no event; a GET of the same page does both", async () => {
+		const writes = vi.spyOn(env.EVENTS, "writeDataPoint");
+
+		const got = await page("198.51.100.30");
+		const token = metaToken(await got.text());
+		expect(writes).toHaveBeenCalledTimes(1); // positive control: the spy sees the Worker's write
+		expect(writes.mock.calls[0]?.[0]?.blobs?.[0]).toBe("page");
+
+		const head = await page("198.51.100.30", { method: "HEAD" });
+		expect(head.status).toBe(200);
+		expect(head.headers.get("content-type")).toContain("text/html");
+		// The same per-visitor headers as the GET: no shared caching, no validator.
+		expect(head.headers.get("cache-control")).toBe(got.headers.get("cache-control"));
+		expect(head.headers.get("cache-control")).toBe("private, no-cache");
+		expect(head.headers.get("etag")).toBeNull();
+		expect(await head.text()).toBe("");
+		expect(writes).toHaveBeenCalledTimes(1);
+		expect(token).toHaveLength(91);
+	});
+
+	it("a real 304 from the origin passes through with private headers, no token and no event", async () => {
+		// The origin's own validator, read straight from the real Static Assets binding (the
+		// Worker strips it from what visitors get, so a client that still holds it is the case).
+		const fromOrigin = await env.ASSETS.fetch(`${BASE}/`);
+		await fromOrigin.body?.cancel();
+		const etag = fromOrigin.headers.get("etag");
+		expect(etag).toBeTruthy();
+		expect(fromOrigin.headers.get("cache-control")).toContain("public");
+
+		const writes = vi.spyOn(env.EVENTS, "writeDataPoint");
+		await (await page("198.51.100.31")).text();
+		expect(writes).toHaveBeenCalledTimes(1); // positive control
+
+		const notModified = await page("198.51.100.31", { headers: { "if-none-match": etag ?? "" } });
+		expect(notModified.status).toBe(304);
+		expect(notModified.headers.get("cache-control")).toBe("private, no-cache");
+		expect(notModified.headers.get("etag")).toBeNull();
+		expect(await notModified.text()).toBe("");
+		expect(writes).toHaveBeenCalledTimes(1);
+	});
+
+	it("in front of a real origin (no ASSETS binding), an origin's no-store survives and the page is still tokenized", async () => {
+		// Production path: without ASSETS the Worker forwards with fetch(request). Mock only the
+		// origin, as the Vitest integration recommends for outbound requests, and fail on anything else.
+		// Django's never_cache header: what an account page actually sends.
+		const accountPage = "<!doctype html><html><head><title>Your account</title></head><body><h1>Orders</h1></body></html>";
+		const origin = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const req = new Request(input, init);
+			if (req.url === `${BASE}/account`) {
+				return new Response(accountPage, {
+					headers: {
+						"content-type": "text/html; charset=utf-8",
+						"cache-control": "max-age=0, no-cache, no-store, must-revalidate, private",
+						etag: '"account-v1"',
+						"content-length": String(accountPage.length),
+					},
+				});
+			}
+			throw new Error(`unexpected outbound request: ${req.method} ${req.url}`);
+		});
+		const writes = vi.spyOn(env.EVENTS, "writeDataPoint");
+
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(
+			new Request(`${BASE}/account`, { headers: { "cf-connecting-ip": "198.51.100.32" } }) as Request<unknown, IncomingRequestCfProperties>,
+			{ ...env, ASSETS: undefined } as unknown as Env,
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+
+		expect(origin).toHaveBeenCalledTimes(1);
+		expect(res.headers.get("cache-control")).toBe("private, no-store");
+		expect(res.headers.get("etag")).toBeNull();
+		expect(res.headers.get("content-length")).toBeNull(); // the body grew
+		const token = metaToken(await res.text());
+		expect(writes).toHaveBeenCalledTimes(1);
+
+		// The token is genuine and names the requester: decode it with the real key ring.
+		const decoded = await admin("/decode", { method: "POST", body: JSON.stringify({ token }) });
+		const body = (await decoded.json()) as { valid: number; results: { fingerprint: { ip: string } }[] };
+		expect(body.valid).toBe(1);
+		expect(body.results[0]?.fingerprint.ip).toBe("198.51.100.32");
 	});
 });
 

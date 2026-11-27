@@ -38,9 +38,10 @@ Integration failures are written into the report as `skipped: …` instead of fa
 ## MaintenanceWorkflow steps
 
 It runs these steps:
-- **find expired flags** (read-only, at most 1,000 per run)
-- **remove expired WAF list items**: retried; IPs whose removal still fails are reported
-- **delete expired flags**, except rows whose list item couldn't be removed, so the next run retries them
+- **find expired flags**: expired active IP blocks only, the rows that have a WAF list item (read-only, at most 1,000 per run)
+- **remove expired WAF list items**: retried; IPs whose removal still fails are reported. One list lookup per IP for now ([ROADMAP C4](../../ROADMAP.md#third-review-2026-11-27))
+- **delete expired flags**: those block rows, except the ones whose list item couldn't be removed, so the next run retries them
+- **delete stale flags #1…#100**: every other expired row (pending, rejected, decoys, JA4 flags) has no list item and is deleted directly, 1,000 rows per step (the chunk size the [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) page recommends), until a step deletes fewer. That is up to 100,000 rows per run, so a distributed trap crawl can't outgrow the purge. Each step is idempotent: a retry deletes the next chunk or nothing
 - **reconcile WAF list**: removes `cf-honeypot:` list items that have no active block flag, and re-adds missing active blocks (Cloudflare IPs skipped). Items without that comment prefix are never touched. Bounded to 10 pages of 500 items and 500 changes each way
 - purge stale leads
 - foreign Referers (Analytics Engine) → leads, **one step per host** (at most 50)

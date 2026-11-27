@@ -281,6 +281,42 @@ export async function deleteExpiredFlags(db: D1Database, indicators: string[], n
 	return deleted;
 }
 
+/** Expired rows that may have a WAF list item: active IP blocks. Everything else is "stale". */
+const EXPIRED_BLOCK = `status = 'active' AND action = 'block' AND kind = 'ip'`;
+
+/**
+ * Expired active IP blocks, oldest first: the only expired rows whose WAF list item must be
+ * removed before the row is deleted (`deleteExpiredFlags`). Read-only and bounded.
+ */
+export async function listExpiredBlockFlags(db: D1Database, now: number, limit = 1000): Promise<ExpiredFlag[]> {
+	const { results } = await db
+		.prepare(`SELECT indicator, kind, action, status FROM flags WHERE expires_at <= ? AND ${EXPIRED_BLOCK} ORDER BY expires_at ASC LIMIT ?`)
+		.bind(now, limit)
+		.all<ExpiredFlag>();
+	return results;
+}
+
+/** Rows per `deleteStaleExpiredFlags` call: D1 guidance is to delete in chunks of about 1,000 rows. */
+export const STALE_DELETE_CHUNK = 1000;
+
+/**
+ * Delete up to `limit` expired rows that have no WAF list item (pending, rejected, decoys, JA4
+ * flags), oldest first, in one statement. Idempotent: a retry deletes the next chunk or nothing,
+ * and a re-approved row has a new `expires_at` and is kept. Returns the number of rows deleted.
+ * https://developers.cloudflare.com/d1/platform/limits/
+ */
+export async function deleteStaleExpiredFlags(db: D1Database, now: number, limit = STALE_DELETE_CHUNK): Promise<number> {
+	const r = await db
+		.prepare(
+			`DELETE FROM flags WHERE indicator IN (
+			   SELECT indicator FROM flags WHERE expires_at <= ? AND NOT (${EXPIRED_BLOCK}) ORDER BY expires_at ASC LIMIT ?
+			 )`,
+		)
+		.bind(now, limit)
+		.run();
+	return r.meta.changes ?? 0;
+}
+
 export type BlockFlag = Pick<FlagRow, "indicator" | "kind" | "action" | "reason" | "source" | "source_ref">;
 
 /** Row cap of `activeBlockFlags`. A result this long may be incomplete. */

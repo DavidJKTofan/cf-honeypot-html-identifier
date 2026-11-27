@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { beaconScript } from "../src/honeypot/beacon";
-import { decodeCharRefs, injectCarriers, scanHtml } from "../src/identity/carriers";
+import { decodeCharRefs, injectCarriers, privateHtmlHeaders, scanHtml } from "../src/identity/carriers";
 import { loadConfig, type Config } from "../src/core/config";
 import { loadSealingKey, sealToken, tokenToBytes } from "../src/identity/token";
 import { decodeZeroWidth, encodeZeroWidth, findZeroWidthTokens } from "../src/identity/zerowidth";
@@ -50,6 +50,44 @@ describe("carrier injection and extraction", () => {
 		expect(text).not.toContain("​‌");
 		expect(headers.get("cache-control")).toBe("private, no-cache");
 		expect(headers.get("etag")).toBeNull();
+	});
+
+	it("keeps an origin's no-store (C1), for the headers real frameworks send", async () => {
+		const t = await token();
+		const send = (cacheControl: string) =>
+			injectCarriers(new Response(PAGE, { headers: { "content-type": "text/html", "cache-control": cacheControl } }), {
+				token: t,
+				cfg: cfg("meta"),
+				origin: "https://honeypot.automatic-demo.com",
+			});
+		const noStore = {
+			"Django never_cache": "max-age=0, no-cache, no-store, must-revalidate, private",
+			"PHP sessions (nocache limiter)": "no-store, no-cache, must-revalidate",
+			"Next.js dynamic page": "private, no-cache, no-store, max-age=0, must-revalidate",
+			"Rails, mixed case": "No-Store",
+		};
+		for (const [origin, value] of Object.entries(noStore)) {
+			expect(send(value).headers.get("cache-control"), origin).toBe("private, no-store");
+		}
+		const cacheable = {
+			"Workers Static Assets": "public, max-age=0, must-revalidate",
+			"a CDN-cached page": "public, max-age=600, s-maxage=3600",
+			"an empty header": "",
+			// An extension directive that only contains the word is not no-store.
+			"x-no-store-hint": "x-no-store-hint, max-age=60",
+		};
+		for (const [origin, value] of Object.entries(cacheable)) {
+			expect(send(value).headers.get("cache-control"), origin).toBe("private, no-cache");
+		}
+		// Still a tokenized page: the header change doesn't skip the rewrite.
+		expect(await send("no-store").text()).toContain(`content="${t}"`);
+	});
+
+	it("privateHtmlHeaders drops the ETag and keeps every other header", () => {
+		const h = privateHtmlHeaders(new Headers({ etag: '"abc"', "last-modified": "Tue, 01 Dec 2026 00:00:00 GMT", "cache-control": "public, max-age=60" }));
+		expect(h.get("etag")).toBeNull();
+		expect(h.get("last-modified")).toBe("Tue, 01 Dec 2026 00:00:00 GMT");
+		expect(h.get("cache-control")).toBe("private, no-cache");
 	});
 
 	it("extracts the same token from every enabled carrier", async () => {

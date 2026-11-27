@@ -2,7 +2,8 @@
  * MaintenanceWorkflow: runs daily via the Workflow `schedules` binding option
  * (and on demand via POST /__hp/maintenance/run).
  *
- *   expire flags: remove expired blocks from the WAF list FIRST, then delete the rows
+ *   expire flags: remove expired blocks from the WAF list FIRST, then delete the rows;
+ *     every other expired row (pending, rejected, decoys) is deleted in bounded chunks
  *   · reconcile the WAF list with active block flags (safety net)
  *   · purge stale leads
  *   · foreign-Referer hosts (WAE) → pending leads (one step per host)
@@ -20,7 +21,15 @@ import { pendingFlagDigest } from "../approvals/digest";
 import { recordLead } from "../approvals/leads";
 import { notifySafe } from "../notify";
 import { topForeignHosts } from "../storage/analytics";
-import { deleteExpiredFlags, indicatorFor, listExpiredFlags, parseIndicator, purgeStaleLeads } from "../storage/d1";
+import {
+	deleteExpiredFlags,
+	deleteStaleExpiredFlags,
+	indicatorFor,
+	listExpiredBlockFlags,
+	parseIndicator,
+	purgeStaleLeads,
+	STALE_DELETE_CHUNK,
+} from "../storage/d1";
 import { errorMessage, hostMatchesSuffix, log, nowSec } from "../core/util";
 
 const DAY = 86_400;
@@ -30,8 +39,14 @@ const BP_RECENT_DAYS = 2;
 const BP_MAX_LEADS = 25;
 /** Hard cap on foreign-Referer leads per run. */
 const REFERER_MAX_LEADS = 50;
-/** Expired flags handled per run; the rest wait for the next run. */
+/** Expired active blocks handled per run (each needs a WAF list lookup); the rest wait for the next run. */
 const EXPIRE_BATCH = 1000;
+/**
+ * Steps of STALE_DELETE_CHUNK rows each for expired rows without a list item: up to 100,000 per
+ * run. A distributed trap crawl can add 30 pending flags a minute per location (TRAP_GLOBAL_LIMITER),
+ * far more than a fixed daily batch, so this must outpace it or the table grows without bound.
+ */
+const STALE_DELETE_MAX_STEPS = 100;
 /** Bulk operations can queue behind each other; Workflow steps can afford to wait. */
 const STEP_POLL_MS = 60_000;
 
@@ -58,14 +73,12 @@ export class MaintenanceWorkflow extends WorkflowEntrypoint<Env, unknown> {
 		const env = this.env;
 		const cfg = loadConfig(env);
 
-		// 1. Expired flags. Read only; `now` is fixed here so later steps act on the same set.
+		// 1. Expired active IP blocks (the only rows with a WAF list item). Read only; `now` is fixed
+		//    here so every later expiry step, the stale deletes included, acts on the same cut-off.
 		const expired = await step.do("find expired flags", async () => {
 			const now = nowSec();
-			const rows = await listExpiredFlags(env.DB, now, EXPIRE_BATCH);
-			const blockIps = rows
-				.filter((r) => r.action === "block" && r.status === "active" && r.kind === "ip")
-				.map((r) => parseIndicator(r.indicator)?.value ?? "")
-				.filter(Boolean);
+			const rows = await listExpiredBlockFlags(env.DB, now, EXPIRE_BATCH);
+			const blockIps = rows.map((r) => parseIndicator(r.indicator)?.value ?? "").filter(Boolean);
 			return { now, indicators: rows.map((r) => r.indicator), blockIps };
 		});
 
@@ -87,12 +100,22 @@ export class MaintenanceWorkflow extends WorkflowEntrypoint<Env, unknown> {
 				});
 		}
 
-		// 3. Delete the expired rows, except blocks whose list item could not be removed.
-		const purged = await step.do("delete expired flags", async () => {
+		// 3. Delete the expired block rows, except those whose list item could not be removed.
+		const blocks = await step.do("delete expired flags", async () => {
 			const keep = new Set(wafRemoval.failed.map((ip) => indicatorFor("ip", ip)));
 			const deletable = expired.indicators.filter((i) => !keep.has(i));
 			return { deleted: await deleteExpiredFlags(env.DB, deletable, expired.now), kept: keep.size };
 		});
+
+		// 3b. Every other expired row has no list item: delete it in bounded chunks, one step each
+		//     (idempotent, so a retried step just deletes the next chunk), until a chunk comes back short.
+		let staleDeleted = 0;
+		for (let i = 0; i < STALE_DELETE_MAX_STEPS; i++) {
+			const n = await step.do(`delete stale flags #${i + 1}`, async () => deleteStaleExpiredFlags(env.DB, expired.now, STALE_DELETE_CHUNK));
+			staleDeleted += n;
+			if (n < STALE_DELETE_CHUNK) break;
+		}
+		const purged = { deleted: blocks.deleted + staleDeleted, kept: blocks.kept };
 
 		// 4. Safety net: list items without an active block flag are removed; missing active blocks are re-added.
 		const reconcile = await step
@@ -184,7 +207,7 @@ export class MaintenanceWorkflow extends WorkflowEntrypoint<Env, unknown> {
 		});
 
 		const summary = {
-			expiredFlags: expired.indicators.length,
+			expiredFlags: expired.indicators.length + staleDeleted,
 			expiredBlockedIps: expired.blockIps.length,
 			wafRemoval: { status: wafRemoval.status, removed: wafRemoval.removed.length, failed: wafRemoval.failed.length },
 			purged,
